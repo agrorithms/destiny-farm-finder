@@ -11,7 +11,9 @@
     "crawler": "npx tsx scripts/start-crawler.ts",
     "setup-manifest": "npx tsx scripts/setup-manifest.ts",
     "db-stats": "npx tsx scripts/db-stats.ts",
-    "debug-players": "npx tsx scripts/debug-players.ts"
+    "debug-players": "npx tsx scripts/debug-players.ts",
+    "debug-sessions": "npx tsx scripts/debug-sessions.ts",
+    "scanner": "npx tsx scripts/start-scanner.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

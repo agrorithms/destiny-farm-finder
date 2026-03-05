@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { runDiscovery } from '../src/lib/discovery/snowball';
+import { runConcurrentDiscovery } from '../src/lib/discovery/snowball-concurrent';
 import { getDbStats } from '../src/lib/db/queries';
 import { closeDb } from '../src/lib/db';
 import { getAllRaidDefinitions } from '../src/lib/bungie/manifest';
@@ -14,29 +14,37 @@ import { getAllRaidDefinitions } from '../src/lib/bungie/manifest';
 const SEED_PLAYERS = [
     // Example — replace with real players:
     { membershipId: '4611686018469615924', membershipType: 1 },
+    { membershipId: '4611686018475332605', membershipType: 3 }, //frosty#1270
+    { membershipId: '4611686018430910666', membershipType: 2 }, //wombat#5871
     { membershipId: '4611686018533113181', membershipType: 3 },
     { membershipId: '4611686018437585442', membershipType: 1 },
     { membershipId: '4611686018431717403', membershipType: 1 },
-    { membershipId: '4611686018452637862', membershipType: 2 },
+    { membershipId: '4611686018452637862', membershipType: 2 }, //3mr
     { membershipId: '4611686018441319193', membershipType: 1 },
     { membershipId: '4611686018501949714', membershipType: 2 },
     { membershipId: '4611686018530726821', membershipType: 1 },
     { membershipId: '4611686018506277701', membershipType: 3 },
-    { membershipId: '4611686018436929273', membershipType: 2 }
+    { membershipId: '4611686018521358615', membershipType: 1 }, //Wisp#4653
+    { membershipId: '4611686018444299777', membershipType: 2 }, //Rhyme#8032
+    { membershipId: '4611686018436929273', membershipType: 2 }, //Macca#3177
+    { membershipId: '4611686018460347295', membershipType: 2 }, //Accessner#3340
+    { membershipId: '4611686018513949048', membershipType: 3 }, //Aegis#2771
+    { membershipId: '4611686018513261063', membershipType: 1 } //Alesia#8610
 ];
 
-// How many hours back to look
-const DISCOVERY_HOURS_BACK = 24;
+// How far back to look for PGCRs during discovery
+const DISCOVERY_HOURS_BACK = parseInt(process.env.DISCOVERY_HOURS_BACK || '48', 10);
 
 // How deep to snowball (each depth = 1 hop through PGCRs)
-const MAX_DEPTH = 2;
+const MAX_DEPTH = parseInt(process.env.DISCOVERY_MAX_DEPTH || '2', 10);
 
 // Max players to discover before stopping
-const MAX_PLAYERS = 2000;
+const MAX_PLAYERS = parseInt(process.env.DISCOVERY_MAX_PLAYERS || '2000', 10);
 
-// Optional: filter to a specific raid (use raid key from manifest.ts)
-// Set to undefined to discover across all raids
-// Examples: 'garden_of_salvation', 'last_wish', 'salvations_edge', etc.
+// Number of concurrent workers
+const CONCURRENCY = parseInt(process.env.DISCOVERY_CONCURRENCY || '5', 10);
+
+// Optional: filter to a specific raid key
 const RAID_FILTER: string | undefined = undefined;
 
 // ============================================
@@ -46,21 +54,15 @@ const RAID_FILTER: string | undefined = undefined;
 async function main() {
     console.log('========================================');
     console.log('  Destiny Farm Finder — Player Discovery');
+    console.log('  (Concurrent Mode)');
     console.log('========================================\n');
 
-    // Validate seed players
     if (SEED_PLAYERS.length === 0) {
         console.error('[ERROR] No seed players configured!');
-        console.error('Edit scripts/discover.ts and add at least one seed player to SEED_PLAYERS.\n');
-        console.error('You can find membership IDs at:');
-        console.error('  - https://www.bungie.net (your profile URL)');
-        console.error('  - https://raid.report (search for a player)\n');
-        console.error('Example:');
-        console.error('  { membershipId: "4611686018469615924", membershipType: 3 }');
+        console.error('Edit scripts/discover.ts and add at least one seed player.\n');
         process.exit(1);
     }
 
-    // Show available raids
     const raids = getAllRaidDefinitions();
     console.log('Available raids:');
     for (const [key, raid] of Object.entries(raids)) {
@@ -68,21 +70,26 @@ async function main() {
     }
     console.log('');
 
-    // Show pre-discovery stats
     const preStats = getDbStats();
     console.log('Database before discovery:', preStats);
     console.log('');
 
-    // Run discovery
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+        console.log('\n[INFO] Received SIGINT. Results may be partial.');
+        closeDb();
+        process.exit(0);
+    });
+
     try {
-        const result = await runDiscovery(SEED_PLAYERS, {
+        const result = await runConcurrentDiscovery(SEED_PLAYERS, {
             maxDepth: MAX_DEPTH,
             maxPlayers: MAX_PLAYERS,
             hoursBack: DISCOVERY_HOURS_BACK,
             raidFilter: RAID_FILTER,
+            concurrency: CONCURRENCY,
         });
 
-        // Show post-discovery stats
         console.log('\n========================================');
         console.log('  Discovery Results');
         console.log('========================================');
