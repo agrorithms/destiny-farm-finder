@@ -49,6 +49,69 @@ export function bulkUpsertPlayers(players: PlayerInfo[]): void {
     insertMany(players);
 }
 
+/**
+ * Get players most likely to be online for active session polling.
+ * Prioritizes:
+ *   1. Players who were recently seen in a PGCR (active raiders)
+ *   2. Players who were recently discovered (fresh in the system)
+ *   3. Seed players / high priority players
+ */
+export function getPlayersForSessionPolling(limit: number = 200): PlayerInfo[] {
+    const db = getDb();
+
+    // Strategy: Get players who appeared in recent PGCRs (last 6 hours)
+    // These are the most likely to still be online and raiding
+    const recentlyActive = db.prepare(`
+    SELECT DISTINCT
+      p.membership_id as membershipId,
+      p.membership_type as membershipType,
+      p.display_name as displayName,
+      p.bungie_global_display_name as bungieGlobalDisplayName
+    FROM players p
+    INNER JOIN pgcr_players pp ON p.membership_id = pp.membership_id
+    INNER JOIN pgcrs pg ON pp.instance_id = pg.instance_id
+    WHERE pg.period >= ?
+      AND p.is_active = 1
+    ORDER BY pg.period DESC
+    LIMIT ?
+  `).all(
+        Math.floor((Date.now() - 6 * 60 * 60 * 1000) / 1000),
+        limit
+    ) as PlayerInfo[];
+
+    if (recentlyActive.length >= limit) {
+        return recentlyActive;
+    }
+
+    // If we don't have enough recently active players,
+    // fill the rest with high-priority and recently discovered players
+    const existingIds = new Set(recentlyActive.map((p) => p.membershipId));
+    const remaining = limit - recentlyActive.length;
+
+    const fallback = db.prepare(`
+    SELECT
+      membership_id as membershipId,
+      membership_type as membershipType,
+      display_name as displayName,
+      bungie_global_display_name as bungieGlobalDisplayName
+    FROM players
+    WHERE is_active = 1
+    ORDER BY priority DESC, discovered_at DESC
+    LIMIT ?
+  `).all(remaining + existingIds.size) as PlayerInfo[];
+
+    // Merge without duplicates
+    for (const player of fallback) {
+        if (!existingIds.has(player.membershipId) && recentlyActive.length < limit) {
+            recentlyActive.push(player);
+            existingIds.add(player.membershipId);
+        }
+    }
+
+    return recentlyActive;
+}
+
+
 export function getPlayersToCrawl(limit: number = 50): PlayerInfo[] {
     const db = getDb();
     return db.prepare(`
@@ -319,7 +382,7 @@ export function getActiveSessions(raidKey?: string, limit: number = 50): any[] {
     const db = getDb();
 
     // Only show sessions checked within the last 10 minutes
-    const freshnessCutoff = Math.floor(Date.now() / 1000) - 600;
+    const freshnessCutoff = Math.floor(Date.now() / 1000) - 4000;
 
     let query = `
     SELECT 

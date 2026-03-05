@@ -1,4 +1,4 @@
-import { getPlayersToCrawl, getPlayerCount, bulkUpsertPlayers, cleanupOldPGCRs, getDbStats } from '../db/queries';
+import { getPlayersForSessionPolling, getPlayersToCrawl, getPlayerCount, bulkUpsertPlayers, cleanupOldPGCRs, getDbStats } from '../db/queries';
 import { crawlPlayer } from './players';
 import { pollActiveSessions } from './active-sessions';
 import { getDb } from '../db';
@@ -39,11 +39,11 @@ export interface CrawlerConfig {
 const DEFAULT_CONFIG: CrawlerConfig = {
     intervalMs: parseInt(process.env.CRAWLER_INTERVAL_MS || '90000', 10),
     maxPlayersPerCycle: parseInt(process.env.CRAWLER_MAX_PLAYERS_PER_CYCLE || '50', 10),
-    hoursBack: 4,
+    hoursBack: parseInt(process.env.CRAWLER_HOURS_BACK || '24', 10),
     enableActiveSessionPolling: true,
-    activeSessionIntervalMs: 300000, // 5 minutes
+    activeSessionIntervalMs: 120000, // 2 minutes
     cleanupIntervalMs: 1800000, // 30 minutes
-    cleanupMaxAgeHours: 6,
+    cleanupMaxAgeHours: parseInt(process.env.CRAWLER_CLEANUP_MAX_AGE_HOURS || '24', 10),
 };
 
 let isRunning = false;
@@ -153,8 +153,9 @@ export async function startCrawler(overrides?: Partial<CrawlerConfig>): Promise<
         console.log(`\n👁️ Polling active sessions...`);
 
         try {
-            const players = getPlayersToCrawl(200); // Check more players for sessions
-            const sessions = await pollActiveSessions(players, 100);
+            const players = getPlayersForSessionPolling(200); // Check more players for sessions
+            console.log(`[SESSIONS] Checking ${players.length} recently active players...`);
+            const sessions = await pollActiveSessions(players, 200);
 
             // Log summary by raid
             const byRaid = new Map<string, number>();

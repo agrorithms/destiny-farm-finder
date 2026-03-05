@@ -10,11 +10,11 @@ import { closeDb } from '../src/lib/db';
 const CRAWLER_CONFIG = {
     intervalMs: parseInt(process.env.CRAWLER_INTERVAL_MS || '90000', 10),
     maxPlayersPerCycle: parseInt(process.env.CRAWLER_MAX_PLAYERS_PER_CYCLE || '50', 10),
-    hoursBack: 24,
+    hoursBack: parseInt(process.env.CRAWLER_HOURS_BACK || '24', 10),
     enableActiveSessionPolling: true,
-    activeSessionIntervalMs: 300000, // 5 minutes
+    activeSessionIntervalMs: 120000, // 5 minutes
     cleanupIntervalMs: 1800000, // 30 minutes
-    cleanupMaxAgeHours: 32,
+    cleanupMaxAgeHours: parseInt(process.env.CRAWLER_CLEANUP_MAX_AGE_HOURS || '48', 10),
 };
 
 // ============================================
