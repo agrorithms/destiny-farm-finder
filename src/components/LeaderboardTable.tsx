@@ -4,30 +4,30 @@ interface LeaderboardEntry {
     membershipId: string;
     membershipType: number;
     displayName: string;
-    bungieGlobalDisplayName?: string;
     completions: number;
-    raidName?: string;
 }
 
 interface LeaderboardTableProps {
     entries: LeaderboardEntry[];
     loading?: boolean;
-    raidKey?: string;
+    title?: string;
+    showRaidColumn?: boolean;
+    raidName?: string;
 }
 
 export default function LeaderboardTable({
     entries,
     loading = false,
-    raidKey,
+    title,
+    showRaidColumn = false,
+    raidName,
 }: LeaderboardTableProps) {
     if (loading) {
         return (
             <div className="space-y-2">
+                {title && <h3 className="text-lg font-bold text-gray-200 mb-3">{title}</h3>}
                 {Array.from({ length: 10 }).map((_, i) => (
-                    <div
-                        key={i}
-                        className="h-12 bg-gray-800 rounded animate-pulse"
-                    />
+                    <div key={i} className="h-10 bg-gray-800 rounded animate-pulse" />
                 ))}
             </div>
         );
@@ -36,79 +36,76 @@ export default function LeaderboardTable({
     if (entries.length === 0) {
         return (
             <div className="text-center py-12 text-gray-400">
+                {title && <h3 className="text-lg font-bold text-gray-200 mb-3">{title}</h3>}
                 <p className="text-lg">No completions found</p>
-                <p className="text-sm mt-2">
-                    Try expanding the time window or running the discovery tool to find more players.
-                </p>
+                <p className="text-sm mt-1">Try adjusting the time range or raid filter</p>
             </div>
         );
     }
 
     return (
-        <div className="overflow-x-auto">
-            <table className="w-full text-left">
-                <thead>
-                    <tr className="border-b border-gray-700">
-                        <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider w-16">
-                            Rank
-                        </th>
-                        <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">
-                            Player
-                        </th>
-                        {raidKey === 'all' && (
-                            <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">
-                                Raid
-                            </th>
-                        )}
-                        <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider text-right w-32">
-                            Clears
-                        </th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800">
-                    {entries.map((entry, index) => (
-                        <tr
-                            key={entry.membershipId}
-                            className="hover:bg-gray-800/50 transition-colors"
-                        >
-                            <td className="px-4 py-3">
-                                <span
-                                    className={`text-sm font-bold ${index === 0
-                                            ? 'text-yellow-400'
-                                            : index === 1
-                                                ? 'text-gray-300'
-                                                : index === 2
-                                                    ? 'text-amber-600'
-                                                    : 'text-gray-500'
-                                        }`}
-                                >
-                                    {index + 1}
-                                </span>
-                            </td>
-                            <td className="px-4 py-3">
-                                <div className="flex flex-col">
-                                    <span className="text-sm font-medium text-white">
-                                        {entry.bungieGlobalDisplayName || entry.displayName}
-                                    </span>
-                                    <span className="text-xs text-gray-500">
-                                        {entry.membershipId}
-                                    </span>
-                                </div>
-                            </td>
-                            {raidKey === 'all' && (
-                                <td className="px-4 py-3 text-sm text-gray-300">
-                                    {entry.raidName || 'Unknown'}
-                                </td>
-                            )}
-                            <td className="px-4 py-3 text-right">
-                                <span className="text-lg font-bold text-blue-400">
-                                    {entry.completions}
-                                </span>
-                            </td>
+        <div>
+            {title && <h3 className="text-lg font-bold text-gray-200 mb-3">{title}</h3>}
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-gray-700 text-gray-400">
+                            <th className="text-left py-3 px-2 w-12">#</th>
+                            <th className="text-left py-3 px-2">Player</th>
+                            {showRaidColumn && <th className="text-left py-3 px-2">Raid</th>}
+                            <th className="text-right py-3 px-2 w-24">Clears</th>
                         </tr>
-                    ))}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        {entries.map((entry, index) => (
+                            <tr
+                                key={entry.membershipId}
+                                className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors"
+                            >
+                                <td className="py-2.5 px-2 text-gray-500">
+                                    {index < 3 ? (
+                                        <span className={`font-bold ${index === 0 ? 'text-yellow-400' :
+                                                index === 1 ? 'text-gray-300' :
+                                                    'text-amber-600'
+                                            }`}>
+                                            {index + 1}
+                                        </span>
+                                    ) : (
+                                        index + 1
+                                    )}
+                                </td>
+                                <td className="py-2.5 px-2">
+                                    <a
+                                        href={`https://raid.report/${getMembershipPrefix(entry.membershipType)}/${entry.membershipId}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-gray-200 hover:text-blue-400 transition-colors"
+                                    >
+                                        {entry.displayName}
+                                    </a>
+                                </td>
+                                {showRaidColumn && (
+                                    <td className="py-2.5 px-2 text-gray-400">{raidName}</td>
+                                )}
+                                <td className="py-2.5 px-2 text-right font-mono font-bold text-gray-200">
+                                    {entry.completions}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
         </div>
     );
+}
+
+function getMembershipPrefix(membershipType: number): string {
+    switch (membershipType) {
+        case 1: return 'xb';
+        case 2: return 'ps';
+        case 3: return 'pc';
+        case 5: return 'stadia';
+        case 6: return 'epic';
+        default: return 'pc';
+    }
 }
