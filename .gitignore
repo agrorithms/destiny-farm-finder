@@ -50,3 +50,6 @@ data/*.db
 data/manifest-cache.json
 data/*.db-wal
 data/*.db-shm
+
+#cleanup
+scripts/cleanup-membership-types.ts

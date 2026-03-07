@@ -5,6 +5,12 @@ import { getDb } from '../db';
 import { insertFullPGCR, hasPGCR } from '../db/queries';
 import { isoToUnix } from '../utils/helpers';
 
+const VALID_MEMBERSHIP_TYPES = new Set([1, 2, 3, 5, 6]);
+
+function isValidMembershipType(type: any): boolean {
+    return VALID_MEMBERSHIP_TYPES.has(Number(type));
+}
+
 // =====================
 // CONFIGURATION
 // =====================
@@ -81,10 +87,22 @@ function getScannerClient(config: ScannerConfig): BungieClient {
 // =====================
 
 /**
- * Save the scanner's current position to the database so it can resume after restart.
+ * Save the scanner's current position to the database.
+ * Only updates if our position is AHEAD of what's in the database,
+ * so we don't overwrite jumps from the backward scanner.
  */
 function saveScannerPosition(instanceId: bigint): void {
     const db = getDb();
+
+    const current = db.prepare(
+        "SELECT value FROM crawler_state WHERE key = 'scanner_position'"
+    ).get() as { value: string } | undefined;
+
+    // Only write if we're ahead of the stored position
+    if (current && BigInt(current.value) > instanceId) {
+        return; // Someone else (backward scan) moved it ahead — don't overwrite
+    }
+
     db.prepare(`
     INSERT INTO crawler_state (key, value, updated_at)
     VALUES ('scanner_position', ?, unixepoch())
@@ -93,6 +111,7 @@ function saveScannerPosition(instanceId: bigint): void {
       updated_at = unixepoch()
   `).run(instanceId.toString());
 }
+
 
 /**
  * Load the scanner's last known position from the database.
@@ -127,6 +146,23 @@ function loadScannerPosition(): bigint {
     console.log(`[SCANNER] No PGCRs in database. Starting from fallback: ${fallback}`);
     return fallback;
 }
+
+/**
+ * Load the scanner position from the database without any fallback logic.
+ * Used for checking if another process has updated the position.
+ */
+function loadScannerPositionRaw(): bigint {
+    const db = getDb();
+    const saved = db.prepare(
+        "SELECT value FROM crawler_state WHERE key = 'scanner_position'"
+    ).get() as { value: string } | undefined;
+
+    if (saved && saved.value) {
+        return BigInt(saved.value);
+    }
+    return BigInt(0);
+}
+
 
 /**
  * Write scanner stats to the database for the web UI.
@@ -237,6 +273,7 @@ async function scanSinglePGCR(
 
         const insertMany = db.transaction((entries: any[]) => {
             for (const entry of entries) {
+                if (!isValidMembershipType(entry.membershipType)) continue;
                 upsertPlayer.run(
                     entry.membershipId,
                     entry.membershipType,
@@ -378,8 +415,19 @@ export async function startScanner(overrides?: Partial<ScannerConfig>): Promise<
             state.isRunning = false;
             saveScannerPosition(state.currentInstanceId);
             writeScannerStats();
-            console.log('[SCANNER] Scanner stopped');
+            console.log('[SCANNER] 🛑 Scanner stopped');
             return;
+        }
+
+        // Check if another process (e.g., backward scan) has moved the position ahead
+        const dbPosition = loadScannerPositionRaw();
+        if (dbPosition > state.currentInstanceId) {
+            const jump = dbPosition - state.currentInstanceId;
+            console.log(
+                `[SCANNER] 🚀 Position jump detected! ${state.currentInstanceId} → ${dbPosition} (+${jump} IDs)`
+            );
+            console.log(`[SCANNER] 📡 Another process updated the position. Jumping ahead...`);
+            state.currentInstanceId = dbPosition;
         }
 
         const batchStart = state.currentInstanceId + BigInt(1);

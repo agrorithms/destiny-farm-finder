@@ -7,6 +7,13 @@ import { fetchAndStorePGCR } from '../crawler/pgcr';
 import { processWithConcurrency } from '../utils/concurrent';
 import type { PlayerInfo } from '../bungie/types';
 
+const VALID_MEMBERSHIP_TYPES = new Set([1, 2, 3, 5, 6]);
+
+function isValidMembershipType(type: any): boolean {
+    return VALID_MEMBERSHIP_TYPES.has(Number(type));
+}
+
+
 // =====================
 // TYPES
 // =====================
@@ -151,6 +158,7 @@ function bulkUpsertDiscoveredPlayers(
 
     const insertMany = db.transaction((entries: typeof players) => {
         for (const p of entries) {
+            if (!isValidMembershipType(p.membershipType)) continue;
             upsert.run(
                 p.membershipId,
                 p.membershipType,
@@ -162,6 +170,7 @@ function bulkUpsertDiscoveredPlayers(
     });
 
     insertMany(players);
+
 }
 
 // =====================

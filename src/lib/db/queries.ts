@@ -1,6 +1,13 @@
 import { getDb } from './index';
 import type { PlayerInfo, LeaderboardEntry } from '../bungie/types';
 
+const VALID_MEMBERSHIP_TYPES = new Set([1, 2, 3, 5, 6]);
+
+function isValidMembershipType(type: any): boolean {
+    return VALID_MEMBERSHIP_TYPES.has(Number(type));
+}
+
+
 // =====================
 // PLAYER QUERIES
 // =====================
@@ -35,7 +42,13 @@ export function bulkUpsertPlayers(players: PlayerInfo[]): void {
   `);
 
     const insertMany = db.transaction((players: PlayerInfo[]) => {
+        let skipped = 0
         for (const p of players) {
+            if (!isValidMembershipType(p.membershipType)) {
+                skipped += 1
+                continue;
+            }
+
             stmt.run(
                 p.membershipId,
                 p.membershipType,
@@ -43,6 +56,9 @@ export function bulkUpsertPlayers(players: PlayerInfo[]): void {
                 p.bungieGlobalDisplayName || null,
                 p.bungieGlobalDisplayNameCode || null
             );
+        }
+        if (skipped > 0) {
+            console.log(`  ⚠️ Skipped ${skipped} players with invalid membership types`);
         }
     });
 
