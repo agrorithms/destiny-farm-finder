@@ -1,40 +1,37 @@
 export class RateLimiter {
-    private tokens: number;
-    private maxTokens: number;
-    private refillRate: number; // tokens per ms
-    private lastRefill: number;
+    private nextSlot = 0; // earliest ms-epoch the next request may fire
+    private tail: Promise<void> = Promise.resolve();
+    private maxRequestsPerSecond: number;
 
     constructor(maxRequestsPerSecond: number) {
-        this.maxTokens = maxRequestsPerSecond;
-        this.tokens = maxRequestsPerSecond;
-        this.refillRate = maxRequestsPerSecond / 1000;
-        this.lastRefill = Date.now();
+        this.maxRequestsPerSecond = maxRequestsPerSecond;
     }
 
-    private refill() {
-        const now = Date.now();
-        const elapsed = now - this.lastRefill;
-        this.tokens = Math.min(this.maxTokens, this.tokens + elapsed * this.refillRate);
-        this.lastRefill = now;
+    // Grants are serialized through a promise chain (FIFO), so two waiters can
+    // never claim the same slot — concurrent callers can't burst past the RPS.
+    wait(): Promise<void> {
+        const grant = this.tail.then(async () => {
+            while (true) {
+                const now = Date.now();
+                const at = Math.max(now, this.nextSlot);
+                if (at > now) {
+                    await new Promise((resolve) => setTimeout(resolve, at - now));
+                    // Re-read nextSlot: a pauseFor() may have landed mid-sleep.
+                    continue;
+                }
+                this.nextSlot = now + 1000 / this.maxRequestsPerSecond;
+                return;
+            }
+        });
+        // A rejected grant must not break the chain for later waiters.
+        this.tail = grant.catch(() => {});
+        return grant;
     }
 
-    async wait(): Promise<void> {
-        this.refill();
-
-        if (this.tokens >= 1) {
-            this.tokens -= 1;
-            return;
-        }
-
-        // Calculate wait time until we have a token
-        const waitMs = Math.ceil((1 - this.tokens) / this.refillRate);
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        this.refill();
-        this.tokens -= 1;
-    }
-
-    getAvailableTokens(): number {
-        this.refill();
-        return Math.floor(this.tokens);
+    // Blocks all queued and future grants until the pause expires. Used when
+    // Bungie signals throttling — the whole key must back off, not just the
+    // request that saw the throttle response.
+    pauseFor(seconds: number): void {
+        this.nextSlot = Math.max(this.nextSlot, Date.now() + seconds * 1000);
     }
 }

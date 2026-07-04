@@ -16,6 +16,14 @@ function getFetchTimeoutMs(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
 }
 
+// ErrorCode 1672 (DestinyThrottledByGameServer) arrives as HTTP 503 with
+// ThrottleSeconds: 0 — Bungie gives no duration, so we impose our own short
+// pause instead of retrying into guaranteed 503s.
+function getGameServerBackoffSec(): number {
+    const parsed = parseInt(process.env.BUNGIE_GAME_SERVER_BACKOFF_SEC || '', 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
+}
+
 export class BungieAPIError extends Error {
     public errorCode: number;
     public errorStatus: string;
@@ -32,7 +40,7 @@ export class BungieClient {
     private apiKey: string;
     private rateLimiter: RateLimiter;
 
-    constructor(apiKey: string, maxRequestsPerSecond: number = 20) {
+    constructor(apiKey: string, maxRequestsPerSecond: number = 25) {
         this.apiKey = apiKey;
         this.rateLimiter = new RateLimiter(maxRequestsPerSecond);
     }
@@ -53,15 +61,37 @@ export class BungieClient {
 
         if (!response.ok) {
             const text = await response.text();
+
+            if (response.status === 429) {
+                const retryAfter = parseInt(response.headers.get('Retry-After') || '', 10);
+                const pauseSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 5;
+                console.warn(`⚠️ HTTP 429 from Bungie — pausing key for ${pauseSec}s`);
+                this.rateLimiter.pauseFor(pauseSec);
+            } else {
+                // Bungie error bodies are JSON even on 5xx; Cloudflare pages are not.
+                try {
+                    const body = JSON.parse(text) as Partial<BungieResponse<unknown>>;
+                    if (body.ErrorCode === 1672) {
+                        const pauseSec = Math.max(body.ThrottleSeconds || 0, getGameServerBackoffSec());
+                        console.warn(`⚠️ Game server throttle (1672) — pausing key for ${pauseSec}s`);
+                        this.rateLimiter.pauseFor(pauseSec);
+                    }
+                } catch {
+                    // Non-JSON body (e.g. Cloudflare HTML) — nothing to inspect.
+                }
+            }
+
             throw new Error(`Bungie API error ${response.status}: ${text}`);
         }
 
         const data: BungieResponse<T> = await response.json();
 
-        // Handle Bungie-level throttling
+        // Bungie-level throttling applies to the whole key, not just this
+        // request — pause the shared limiter and fail fast; the ErrorCode
+        // check below throws and callers treat it as a transient error.
         if (data.ThrottleSeconds > 0) {
-            console.warn(`⚠️ Throttled by Bungie for ${data.ThrottleSeconds}s`);
-            await new Promise((resolve) => setTimeout(resolve, data.ThrottleSeconds * 1000));
+            console.warn(`⚠️ Throttled by Bungie for ${data.ThrottleSeconds}s — pausing key`);
+            this.rateLimiter.pauseFor(data.ThrottleSeconds);
         }
 
         if (data.ErrorCode !== 1) {
@@ -144,9 +174,6 @@ export class BungieClient {
         });
     }
 
-    getRateLimiterStatus(): number {
-        return this.rateLimiter.getAvailableTokens();
-    }
 }
 
 // Singleton instance
@@ -158,7 +185,7 @@ export function getBungieClient(): BungieClient {
         const apiKey = process.env.BUNGIE_API_KEY;
         if (!apiKey) throw new Error('BUNGIE_API_KEY not set in environment');
 
-        const maxRps = parseInt(process.env.BUNGIE_MAX_REQUESTS_PER_SECOND || '20', 10);
+        const maxRps = parseInt(process.env.BUNGIE_MAX_REQUESTS_PER_SECOND || '25', 10);
         clientInstance = new BungieClient(apiKey, maxRps);
     }
     return clientInstance;
