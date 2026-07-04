@@ -3,6 +3,7 @@ import { formatBungieDisplayName, getActiveSessions } from '@/lib/db/queries';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
 import { getDb, isDatabaseMaintenanceError } from '@/lib/db';
 import { getActivityDisplayName } from '@/lib/utils/activity';
+import { dedupeActiveSessions } from '@/lib/active-session/dedupe';
 import { withCache, withNoStore } from '@/lib/http/cache';
 
 interface PlayerLookupRow {
@@ -24,21 +25,6 @@ interface SessionPartyMember {
     membershipType: number | undefined;
     displayName: string;
     status: number | undefined;
-}
-
-interface EnrichedSession {
-    membershipId: string;
-    membershipType: number;
-    displayName: string;
-    activityHash: number;
-    activityModeHash: number | null;
-    activityModeType: number | null;
-    raidKey: string | null;
-    raidName: string;
-    startedAt: string;
-    playerCount: number;
-    partyMembers: SessionPartyMember[];
-    checkedAt: number;
 }
 
 function parsePartyMembers(rawJson: string | null): ParsedPartyMember[] {
@@ -178,7 +164,12 @@ export async function GET(request: NextRequest) {
             };
         });
 
-        const deduped = deduplicateSessions(sessions);
+        const deduped = dedupeActiveSessions(sessions, (session) => ({
+            activityHash: session.activityHash,
+            memberIds: session.partyMembers.map((m) => m.membershipId),
+            checkedAt: session.checkedAt,
+            startedAt: session.startedAt,
+        }));
 
         return withCache(NextResponse.json({
             raidKey: raidKey || 'all',
@@ -211,64 +202,3 @@ function isLikelyMembershipId(str: string): boolean {
     return /^\d{16,}$/.test(str);
 }
 
-/**
- * Deduplicate sessions where multiple tracked players are in the same fireteam.
- */
-function deduplicateSessions(sessions: EnrichedSession[]): EnrichedSession[] {
-    // Newest sessions win, then we suppress older subset/superset variants
-    // for the same activity hash (e.g. A,B vs A,B,C).
-    const sorted = [...sessions].sort((a, b) => {
-        const checkedDiff = Number(b.checkedAt || 0) - Number(a.checkedAt || 0);
-        if (checkedDiff !== 0) return checkedDiff;
-        return Date.parse(b.startedAt || '') - Date.parse(a.startedAt || '');
-    });
-
-    const kept: EnrichedSession[] = [];
-
-    for (const session of sorted) {
-        const currentMembers = uniqueSortedMemberIds(session);
-        if (currentMembers.length === 0) continue;
-
-        let suppressed = false;
-        for (const existing of kept) {
-            if (existing.activityHash !== session.activityHash) continue;
-            const existingMembers = uniqueSortedMemberIds(existing);
-
-            if (
-                haveSameMembers(currentMembers, existingMembers) ||
-                isSubset(currentMembers, existingMembers) ||
-                isSubset(existingMembers, currentMembers)
-            ) {
-                suppressed = true;
-                break;
-            }
-        }
-
-        if (!suppressed) {
-            kept.push(session);
-        }
-    }
-
-    return kept;
-}
-
-function uniqueSortedMemberIds(session: EnrichedSession): string[] {
-    const memberIds: string[] = (session.partyMembers || [])
-        .map((m) => String(m.membershipId || ''))
-        .filter((id: string): id is string => id.length > 0);
-    return Array.from(new Set<string>(memberIds)).sort();
-}
-
-function haveSameMembers(a: string[], b: string[]): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) return false;
-    }
-    return true;
-}
-
-function isSubset(subset: string[], superset: string[]): boolean {
-    if (subset.length > superset.length) return false;
-    const supersetSet = new Set(superset);
-    return subset.every((id) => supersetSet.has(id));
-}

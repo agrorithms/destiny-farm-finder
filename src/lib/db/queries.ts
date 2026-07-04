@@ -740,6 +740,28 @@ export function getPlayerRaidCompletionSummary(
   `).all(membershipId, cutoffTimestamp) as PlayerRaidCompletionSummary[];
 }
 
+/**
+ * Count of distinct full raid clears in the last `hoursBack` hours. "Full clear" matches the
+ * leaderboard definition (see runLeaderboardRows in src/lib/cache/leaderboard-cache.ts):
+ * a completed pgcr started from the beginning. Since pgcrs is keyed by instance_id, COUNT(*)
+ * is a distinct-instance count — a clear is counted once, never multiplied by fireteam size.
+ */
+export function getFullClearCount(hoursBack: number): number {
+    const db = getDb();
+    const cutoffTimestamp = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+
+    const row = db.prepare(`
+    SELECT COUNT(*) as n
+    FROM pgcrs
+    WHERE ended_at >= ?
+      AND completed = 1
+      AND activity_was_started_from_beginning = 1
+      AND raid_key IS NOT NULL
+  `).get(cutoffTimestamp) as { n: number };
+
+    return row.n;
+}
+
 export interface PlayerRecentCompletion {
     instanceId: string;
     raidKey: string | null;

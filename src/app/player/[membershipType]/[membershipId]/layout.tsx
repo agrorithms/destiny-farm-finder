@@ -34,7 +34,7 @@ export async function generateMetadata({
 
     const title = `${data.displayName} — ${data.totalClears.toLocaleString()} raid clears`;
     const description = data.topRaidName
-        ? `Most farmed (${MOST_FARMED_WINDOW_DAYS}d): ${data.topRaidName} ×${data.topRaidCount} · Live raid tracking on Destiny Farm Finder.`
+        ? `Most cleared (${MOST_FARMED_WINDOW_DAYS}d): ${data.topRaidName} ×${data.topRaidCount} · Live raid tracking on Destiny Farm Finder.`
         : 'Live Destiny 2 raid completion tracking on Destiny Farm Finder.';
 
     return {
