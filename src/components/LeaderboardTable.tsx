@@ -5,6 +5,10 @@ interface LeaderboardEntry {
     membershipType: number;
     displayName: string;
     completions: number;
+    /** Rank change vs when the viewer opened the page (positive = moved up). */
+    rankDelta?: number;
+    /** Set when this row's rank/clears changed on a refresh; bumping it re-triggers the flash. */
+    changeStamp?: number;
 }
 
 interface LeaderboardTableProps {
@@ -50,6 +54,9 @@ export default function LeaderboardTable({
                 <table className="w-full table-fixed text-sm">
                     <colgroup>
                         <col className="w-[2.25rem] sm:w-10" />
+                        {/* Rank-change badges get a permanently reserved slot so appearing
+                            badges never push other columns out of alignment. */}
+                        <col className="w-7 sm:w-8" />
                         <col />
                         {showRaidColumn && <col className="w-[5.5rem] sm:w-28" />}
                         <col className="w-[4.25rem] sm:w-20" />
@@ -57,6 +64,9 @@ export default function LeaderboardTable({
                     <thead>
                         <tr className="border-b ui-divider ui-text-muted">
                             <th className="text-left py-1 px-1.5 sm:px-2">#</th>
+                            <th className="py-1 px-0.5">
+                                <span className="sr-only">Rank change</span>
+                            </th>
                             <th className="text-left py-1 px-1.5 sm:px-2">Player</th>
                             {showRaidColumn && <th className="text-left py-1 px-1.5 sm:px-2">Raid</th>}
                             <th className="text-right py-1 px-1.5 sm:px-2">Clears</th>
@@ -65,8 +75,8 @@ export default function LeaderboardTable({
                     <tbody>
                         {entries.map((entry, index) => (
                             <tr
-                                key={entry.membershipId}
-                                className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                                key={`${entry.membershipId}-${entry.changeStamp ?? 0}`}
+                                className={`border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors ${entry.changeStamp ? 'row-flash' : ''}`}
                             >
                                 <td className="py-1.25 px-1.5 sm:px-2 ui-text-muted">
                                     {index < 3 ? (
@@ -78,6 +88,18 @@ export default function LeaderboardTable({
                                         </span>
                                     ) : (
                                         index + 1
+                                    )}
+                                </td>
+                                <td className="py-1.25 px-0.5 text-[0.65rem] leading-none whitespace-nowrap">
+                                    {entry.rankDelta !== undefined && entry.rankDelta !== 0 && (
+                                        <span
+                                            className={entry.rankDelta > 0
+                                                ? 'text-green-600 dark:text-green-400'
+                                                : 'text-red-600 dark:text-red-400'}
+                                            title="Moved since you opened this page"
+                                        >
+                                            {entry.rankDelta > 0 ? `▲${entry.rankDelta}` : `▼${-entry.rankDelta}`}
+                                        </span>
                                     )}
                                 </td>
                                 <td className="min-w-0 overflow-hidden py-1.25 px-1.5 sm:px-2">

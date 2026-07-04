@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
+/* dark: utilities follow the .dark class (set by the no-flash script in layout.tsx +
+   useTheme), not the OS media query, so users can override system preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  color-scheme: light;
   --background: #faf9f5;
   --foreground: #141413;
   --ui-surface-card: #f5f4ed;
@@ -29,34 +34,55 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #262624;
-    --foreground: #faf9f5;
-    --ui-surface-card: #1f1e1d;
-    --ui-surface-card-muted: #2a2a28;
-    --ui-surface-input: #30302e;
-    --ui-border-subtle: #41413e;
-    --ui-border-strong: #4a4a46;
-    --ui-border-input: #4a4a46;
-    --ui-text-primary: #faf9f5;
-    --ui-text-secondary: #cfcdc5;
-    --ui-text-muted: #9c9a92;
-    --ui-text-subtle: #7f7d76;
-    --ui-accent: #c18a3b;
-    --ui-accent-hover: #d79d49;
-    --ui-accent-active: #a8752e;
-    --ui-accent-contrast: #1f1e1d;
-    --ui-accent-soft-border: #6a5640;
-    --ui-nav-bg: #1f1e1d;
-    --ui-nav-border: #41413e;
-  }
+.dark {
+  color-scheme: dark;
+  --background: #262624;
+  --foreground: #faf9f5;
+  --ui-surface-card: #1f1e1d;
+  --ui-surface-card-muted: #2a2a28;
+  --ui-surface-input: #30302e;
+  --ui-border-subtle: #41413e;
+  --ui-border-strong: #4a4a46;
+  --ui-border-input: #4a4a46;
+  --ui-text-primary: #faf9f5;
+  --ui-text-secondary: #cfcdc5;
+  --ui-text-muted: #9c9a92;
+  --ui-text-subtle: #7f7d76;
+  --ui-accent: #c18a3b;
+  --ui-accent-hover: #d79d49;
+  --ui-accent-active: #a8752e;
+  --ui-accent-contrast: #1f1e1d;
+  --ui-accent-soft-border: #6a5640;
+  --ui-nav-bg: #1f1e1d;
+  --ui-nav-border: #41413e;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* One-shot highlight when a StatsBar number changes between polls. */
+@keyframes stat-flash {
+  from {
+    color: var(--ui-accent);
+  }
+}
+
+.stat-flash {
+  animation: stat-flash 1s ease-out;
+}
+
+/* One-shot highlight for leaderboard rows whose rank/clears changed on a refresh. */
+@keyframes row-flash {
+  from {
+    background-color: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  }
+}
+
+.row-flash {
+  animation: row-flash 2s ease-out;
 }
 
 @layer components {

@@ -4,8 +4,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import RaidMultiSelect from '@/components/RaidMultiSelect';
 import LeaderboardTable from '@/components/LeaderboardTable';
 import TimeSlider, { formatTimeRange } from '@/components/TimeSlider';
-// import StatsBar from '@/components/StatsBar';
 import { useRaidFilter } from '@/hooks/useRaidFilter';
+import { useReportPageLiveStatus } from '@/hooks/usePageLiveStatus';
 import { useViewMode, useTimeRange, useLeaderboardSize } from '@/hooks/useLeaderboardPrefs';
 
 interface RaidOption {
@@ -18,6 +18,10 @@ interface LeaderboardEntry {
     membershipType: number;
     displayName: string;
     completions: number;
+    /** Rank change vs when the page was opened (positive = moved up). */
+    rankDelta?: number;
+    /** Fetch sequence number of the last time this row's rank/clears changed. */
+    changeStamp?: number;
 }
 
 interface AggregateResponse {
@@ -73,8 +77,60 @@ export default function LeaderboardPage() {
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState<LeaderboardResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     const requestIdRef = useRef(0);
     const activeControllerRef = useRef<AbortController | null>(null);
+    // Rank movement is measured against the first response seen for the current
+    // filter combo ("since you opened this page"), not the previous refresh.
+    const baselineRef = useRef<{ comboKey: string; ranks: Map<string, number> } | null>(null);
+    const prevRowsRef = useRef<Map<string, { rank: number; completions: number; changeStamp?: number }>>(new Map());
+
+    const annotateMovement = useCallback((result: LeaderboardResponse, comboKey: string, fetchSeq: number) => {
+        const scopes: Array<[string, LeaderboardEntry[]]> = result.mode === 'aggregate'
+            ? [['aggregate', result.entries]]
+            : Object.values(result.leaderboards).map((lb) => [lb.raidKey, lb.entries] as [string, LeaderboardEntry[]]);
+
+        if (baselineRef.current?.comboKey !== comboKey) {
+            // Filters changed (or first load): reset and capture a fresh baseline.
+            const ranks = new Map<string, number>();
+            for (const [scope, entries] of scopes) {
+                entries.forEach((entry, index) => ranks.set(`${scope}:${entry.membershipId}`, index + 1));
+            }
+            baselineRef.current = { comboKey, ranks };
+            prevRowsRef.current = new Map(
+                scopes.flatMap(([scope, entries]) => entries.map((entry, index): [string, { rank: number; completions: number }] => [
+                    `${scope}:${entry.membershipId}`,
+                    { rank: index + 1, completions: entry.completions },
+                ]))
+            );
+            return result;
+        }
+
+        const baseline = baselineRef.current.ranks;
+        const prevRows = prevRowsRef.current;
+        const nextRows = new Map<string, { rank: number; completions: number; changeStamp?: number }>();
+
+        for (const [scope, entries] of scopes) {
+            entries.forEach((entry, index) => {
+                const key = `${scope}:${entry.membershipId}`;
+                const rank = index + 1;
+                const baselineRank = baseline.get(key);
+                if (baselineRank === undefined) {
+                    // New entrant: no badge yet, but track them from here on.
+                    baseline.set(key, rank);
+                } else if (baselineRank !== rank) {
+                    entry.rankDelta = baselineRank - rank;
+                }
+                const prev = prevRows.get(key);
+                const changed = prev !== undefined && (prev.rank !== rank || prev.completions !== entry.completions);
+                entry.changeStamp = changed ? fetchSeq : prev?.changeStamp;
+                nextRows.set(key, { rank, completions: entry.completions, changeStamp: entry.changeStamp });
+            });
+        }
+
+        prevRowsRef.current = nextRows;
+        return result;
+    }, []);
 
     const fetchLeaderboard = useCallback(async () => {
         const requestId = ++requestIdRef.current;
@@ -108,7 +164,9 @@ export default function LeaderboardPage() {
             if (requestId !== requestIdRef.current) {
                 return;
             }
-            setData(result);
+            const comboKey = `${hours}|${mode}|${leaderboardSize}|${selectedRaids.join(',')}`;
+            setData(annotateMovement(result, comboKey, requestId));
+            setLastUpdated(new Date());
         } catch (err) {
             if ((err as Error).name === 'AbortError') {
                 return;
@@ -122,7 +180,7 @@ export default function LeaderboardPage() {
                 setLoading(false);
             }
         }
-    }, [selectedRaids, hours, mode, leaderboardSize]);
+    }, [selectedRaids, hours, mode, leaderboardSize, annotateMovement]);
 
     useEffect(() => {
         return () => activeControllerRef.current?.abort();
@@ -138,6 +196,9 @@ export default function LeaderboardPage() {
         return () => clearInterval(interval);
     }, [fetchLeaderboard]);
 
+    // Surface data freshness in the nav stats strip
+    useReportPageLiveStatus(lastUpdated, 60);
+
     // Build the raid filter description
     const raidFilterLabel = selectedRaids.length === 0 || selectedRaids.length === AVAILABLE_RAIDS.length
         ? 'All Raids'
@@ -147,11 +208,6 @@ export default function LeaderboardPage() {
 
     return (
         <div className="max-w-7xl mx-auto px-4 py-8">
-            {/* Stats Bar */}
-            {/* <div className="mb-6">
-                <StatsBar />
-            </div> */}
-
             <h1 className="text-3xl font-bold ui-text-primary mb-2">Raid Leaderboard</h1>
             <p className="ui-text-secondary mb-6">
                 Top raiders by full clears in the last {formatTimeRange(hours)}
@@ -250,7 +306,7 @@ export default function LeaderboardPage() {
                 <div className="ui-card p-3 sm:p-4">
                     <LeaderboardTable
                         entries={(data as AggregateResponse).entries}
-                        loading={loading}
+                        loading={loading && !data}
                         showRaidColumn={false}
                     />
                 </div>
@@ -292,7 +348,7 @@ export default function LeaderboardPage() {
                                     >
                                         <LeaderboardTable
                                             entries={lb.entries}
-                                            loading={loading}
+                                            loading={loading && !data}
                                             title={lb.raidName}
                                             showRaidColumn={false}
                                         />
