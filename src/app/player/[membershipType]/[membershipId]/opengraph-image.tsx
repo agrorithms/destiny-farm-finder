@@ -88,8 +88,8 @@ export default async function Image({
                                 {topRaidName ?? 'No recent clears'}
                             </div>
                             {topRaidName ? (
-                                <div style={{ fontSize: '46px', fontWeight: 800, color: OG_ACCENT }}>
-                                    {`×${topRaidCount}`}
+                                <div style={{ fontSize: '46px', fontWeight: 800, color: OG_ACCENT, lineHeight: 1.1 }}>
+                                    {` · ${topRaidCount}`}
                                 </div>
                             ) : null}
                         </div>
