@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-// import StatsBar from '@/components/StatsBar';
 import ActiveSessionCard from '@/components/ActiveSessionCard';
 import RaidMultiSelect from '@/components/RaidMultiSelect';
 import { useRaidFilter } from '@/hooks/useRaidFilter';
+import { useReportPageLiveStatus } from '@/hooks/usePageLiveStatus';
 
 interface PartyMember {
     membershipId: string;
@@ -78,6 +78,9 @@ export default function ActiveSessionsPage() {
         return () => clearInterval(interval);
     }, [fetchSessions]);
 
+    // Surface data freshness in the nav stats strip
+    useReportPageLiveStatus(lastUpdated, 30);
+
     // Filter sessions by selected raids (empty = all raids)
     const filteredSessions = selectedRaids.length === 0
         ? sessions
@@ -100,18 +103,8 @@ export default function ActiveSessionsPage() {
 
     return (
         <div className="max-w-7xl mx-auto px-4 py-8">
-            {/* Stats Bar */}
-            {/* <div className="mb-6">
-                <StatsBar />
-            </div> */}
-
             <div className="flex items-center justify-between mb-6">
                 <h1 className="text-3xl font-bold ui-text-primary">Active Raid Sessions</h1>
-                {lastUpdated && (
-                    <span className="text-sm ui-text-muted">
-                        Last updated: {lastUpdated.toLocaleTimeString()}
-                    </span>
-                )}
             </div>
 
             {maintenanceMessage && (

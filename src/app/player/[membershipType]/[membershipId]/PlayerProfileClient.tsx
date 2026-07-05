@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Image from 'next/image';
 import Link from 'next/link';
-// import StatsBar from '@/components/StatsBar';
 import ActiveSessionCard from '@/components/ActiveSessionCard';
 import RaidMultiSelect from '@/components/RaidMultiSelect';
 import TimeSlider, { formatTimeRange } from '@/components/TimeSlider';
@@ -428,10 +427,6 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
 
     return (
         <div className="max-w-7xl mx-auto px-4 py-8">
-            {/* <div className="mb-6">
-                <StatsBar />
-            </div> */}
-
             {error && (
                 <div className="bg-red-100 border border-red-300 rounded-lg p-4 mb-6 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400">
                     Error loading player profile: {error}

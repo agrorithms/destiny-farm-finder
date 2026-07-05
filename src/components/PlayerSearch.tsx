@@ -267,14 +267,29 @@ export default function PlayerSearch() {
                 />
                 <button
                     type="submit"
-                    className="rounded-lg ui-btn-primary text-sm px-3 py-2"
+                    className="rounded-lg ui-btn-primary text-sm px-3 py-2 shrink-0"
+                    aria-label="Search"
                 >
-                    Search
+                    <span className="hidden sm:inline">Search</span>
+                    <svg
+                        className="sm:hidden"
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        aria-hidden="true"
+                    >
+                        <circle cx="11" cy="11" r="7" />
+                        <path d="m21 21-4.35-4.35" />
+                    </svg>
                 </button>
             </form>
 
             {open && (
-                <div className="absolute top-full mt-2 w-full rounded-lg ui-input shadow-xl z-50 overflow-hidden">
+                <div className="absolute top-full mt-2 right-0 w-full min-w-72 rounded-lg ui-input shadow-xl z-50 overflow-hidden">
                     {loading && (
                         <div className="px-3 py-2 text-sm ui-text-secondary">Searching...</div>
                     )}

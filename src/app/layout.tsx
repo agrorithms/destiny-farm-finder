@@ -5,6 +5,8 @@ import Script from 'next/script';
 import packageJson from '../../package.json';
 import './globals.css';
 import PlayerSearch from '@/components/PlayerSearch';
+import StatsBar from '@/components/StatsBar';
+import ThemeToggle from '@/components/ThemeToggle';
 import BungieMaintenanceAlert from '@/components/BungieMaintenanceAlert';
 import FooterStatus from '@/components/FooterStatus';
 
@@ -40,8 +42,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Sets .dark before paint (localStorage override, else OS preference) so
+            there is no flash of the wrong theme. Kept in sync by useTheme afterwards. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem('destiny-farm-finder-theme');if(t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark');}}catch(e){}`,
+          }}
+        />
         <Script
           src="https://cloud.umami.is/script.js"
           data-website-id="ac99ded7-08b1-405d-9438-b3e03c1a7339"
@@ -54,26 +63,34 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col">
         <nav className="ui-nav-surface border-b backdrop-blur-sm sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <Link href="/" className="text-lg font-bold ui-text-primary hover:text-[var(--ui-accent)] transition-colors shrink-0">
-              Destiny Farm Finder
-            </Link>
-            <PlayerSearch />
-            <div className="flex gap-6 shrink-0">
-              <Link
-                href="/leaderboard"
-                className="text-sm ui-text-secondary hover:text-[var(--ui-text-primary)] transition-colors"
-              >
-                Leaderboard
+          <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-8">
+            <div className="flex items-center gap-3 lg:gap-6 min-w-0 lg:flex-1">
+              <Link href="/" className="text-base lg:text-lg font-bold ui-text-primary hover:text-[var(--ui-accent)] transition-colors shrink-0">
+                Destiny Farm Finder
               </Link>
-              <Link
-                href="/active-sessions"
-                className="text-sm ui-text-secondary hover:text-[var(--ui-text-primary)] transition-colors"
-              >
-                Active Sessions
-              </Link>
+              <div className="w-full min-w-0 max-w-md">
+                <PlayerSearch />
+              </div>
+            </div>
+            <div className="flex items-center justify-between lg:justify-end lg:gap-6 shrink-0">
+              <div className="flex gap-6">
+                <Link
+                  href="/leaderboard"
+                  className="text-sm ui-text-secondary hover:text-[var(--ui-text-primary)] transition-colors"
+                >
+                  Leaderboard
+                </Link>
+                <Link
+                  href="/active-sessions"
+                  className="text-sm ui-text-secondary hover:text-[var(--ui-text-primary)] transition-colors"
+                >
+                  Active Sessions
+                </Link>
+              </div>
+              <ThemeToggle />
             </div>
           </div>
+          <StatsBar />
         </nav>
         <BungieMaintenanceAlert />
         <main className="max-w-7xl mx-auto px-4 py-6 w-full flex-1">

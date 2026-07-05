@@ -28,6 +28,7 @@ interface LeaderboardDbRow {
     bungieGlobalDisplayName: string | null;
     bungieGlobalDisplayNameCode: number | null;
     completions: number;
+    lastClearAt: number;
 }
 
 export interface LeaderboardResponseEntry {
@@ -35,6 +36,8 @@ export interface LeaderboardResponseEntry {
     membershipType: number;
     displayName: string;
     completions: number;
+    /** Competition rank ("1224"): tied completions share a rank, next rank skips by group size. */
+    rank: number;
 }
 
 export interface IndividualLeaderboard {
@@ -126,7 +129,7 @@ export function leaderboardCacheBand(hours: number): CacheBand {
     };
 }
 
-// ── Query runner (extracted, SQL unchanged) ──────────────────────────────────
+// ── Query runner ─────────────────────────────────────────────────────────────
 
 function formatDisplayName(entry: LeaderboardDbRow): string {
     if (entry.bungieGlobalDisplayName && entry.bungieGlobalDisplayNameCode) {
@@ -151,7 +154,8 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
           COALESCE(pl.bungie_global_display_name, pp.display_name) as displayName,
           pl.bungie_global_display_name as bungieGlobalDisplayName,
           pl.bungie_global_display_name_code as bungieGlobalDisplayNameCode,
-          COUNT(DISTINCT pp.instance_id) as completions
+          COUNT(DISTINCT pp.instance_id) as completions,
+          MAX(p.ended_at) as lastClearAt
         FROM pgcr_players pp
         JOIN pgcrs p ON pp.instance_id = p.instance_id
         LEFT JOIN players pl ON pp.membership_id = pl.membership_id
@@ -170,21 +174,32 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
 
     query += ` AND p.activity_was_started_from_beginning = 1`;
 
+    // Within a tie group the earliest achiever ranks highest: lastClearAt is the
+    // completion time of the most recent counted clear, so a stale PGCR found
+    // late still slots the player at their true historical position.
     query += `
         GROUP BY pp.membership_id
         HAVING completions > 0
-        ORDER BY completions DESC
+        ORDER BY completions DESC, lastClearAt ASC, pp.membership_id ASC
         LIMIT ?
     `;
     params.push(limit);
 
     const rows = db.prepare(query).all(...params) as LeaderboardDbRow[];
-    return rows.map((row) => ({
-        membershipId: row.membershipId,
-        membershipType: row.membershipType,
-        displayName: formatDisplayName(row),
-        completions: row.completions,
-    }));
+    let prevCompletions = -1;
+    let prevRank = 0;
+    return rows.map((row, index) => {
+        const rank = row.completions === prevCompletions ? prevRank : index + 1;
+        prevCompletions = row.completions;
+        prevRank = rank;
+        return {
+            membershipId: row.membershipId,
+            membershipType: row.membershipType,
+            displayName: formatDisplayName(row),
+            completions: row.completions,
+            rank,
+        };
+    });
 }
 
 const yieldTick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
