@@ -30,11 +30,22 @@ export class DatabaseMaintenanceError extends Error {
     }
 }
 
+function busyTimeoutMs(): number {
+    const raw = process.env.SQLITE_BUSY_TIMEOUT_MS;
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30000;
+}
+
 function configureDatabase(db: Database.Database): void {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     db.pragma('cache_size = -64000'); // 64MB cache
     db.pragma('foreign_keys = ON');
+    // Queue behind a competing process's write lock instead of throwing
+    // SQLITE_BUSY after better-sqlite3's 5s default. The wait is synchronous:
+    // the calling process's event loop blocks until the lock frees or the
+    // timeout expires.
+    db.pragma(`busy_timeout = ${busyTimeoutMs()}`);
 }
 
 export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMaintenanceError {
@@ -79,6 +90,5 @@ export function openMaintenanceDb(): Database.Database {
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
     const db = new Database(DB_PATH);
     configureDatabase(db);
-    db.pragma('busy_timeout = 30000');
     return db;
 }

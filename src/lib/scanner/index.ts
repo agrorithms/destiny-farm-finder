@@ -40,6 +40,10 @@ const VALID_MEMBERSHIP_TYPES = new Set([1, 2, 3, 5, 6]);
 const missedIdsSet = new Set<string>();
 const RETRY_THRESHOLD = 50; // Retry when 50 missed IDs are collected
 const MAX_MISSED_IDS = parseInt(process.env.SCANNER_MAX_MISSED_IDS || '20000', 10);
+// Delay before re-entering the scan loop after an unexpected iteration error
+// (e.g. transient SQLITE_BUSY) so the scanner rides out DB contention instead
+// of crashing the process.
+const SCAN_LOOP_ERROR_RETRY_MS = 5000;
 let missedIdsDroppedDueToCap = 0;
 
 function addMissedId(instanceId: string): void {
@@ -303,23 +307,30 @@ function getScannerPlayerUpsertTransaction(): (entries: ScannerPlayerEntry[]) =>
 // =====================
 
 function saveScannerPosition(instanceId: bigint): void {
-    const db = getDb();
+    // Best-effort checkpoint: the live position stays in memory, so a save that
+    // loses the busy-timeout race is just skipped — the next loop iteration
+    // persists a newer position anyway (and re-scanned IDs are no-ops on insert).
+    try {
+        const db = getDb();
 
-    const current = db.prepare(
-        "SELECT value FROM crawler_state WHERE key = 'scanner_position'"
-    ).get() as { value: string } | undefined;
+        const current = db.prepare(
+            "SELECT value FROM crawler_state WHERE key = 'scanner_position'"
+        ).get() as { value: string } | undefined;
 
-    if (current && BigInt(current.value) > instanceId) {
-        return;
+        if (current && BigInt(current.value) > instanceId) {
+            return;
+        }
+
+        db.prepare(`
+        INSERT INTO crawler_state (key, value, updated_at)
+        VALUES ('scanner_position', ?, unixepoch())
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = unixepoch()
+      `).run(instanceId.toString());
+    } catch (error) {
+        console.warn(`[SCANNER] Failed to save position ${instanceId} (will retry next cycle):`, error);
     }
-
-    db.prepare(`
-    INSERT INTO crawler_state (key, value, updated_at)
-    VALUES ('scanner_position', ?, unixepoch())
-    ON CONFLICT(key) DO UPDATE SET
-      value = excluded.value,
-      updated_at = unixepoch()
-  `).run(instanceId.toString());
 }
 
 function loadScannerPosition(): bigint {
@@ -736,7 +747,22 @@ export async function startScanner(overrides?: Partial<ScannerConfig>): Promise<
     console.log(`  Starting at:   ${state.currentInstanceId}`);
     console.log('');
 
+    // Guard around each iteration: an unexpected error (transient SQLITE_BUSY
+    // past the busy_timeout, disk hiccup, …) logs and re-schedules instead of
+    // crashing the process via an unhandled rejection.
     async function scanLoop() {
+        try {
+            await scanLoopIteration();
+        } catch (error) {
+            console.error(
+                `[SCANNER] Scan loop iteration failed; retrying in ${SCAN_LOOP_ERROR_RETRY_MS / 1000}s:`,
+                error
+            );
+            setTimeout(scanLoop, SCAN_LOOP_ERROR_RETRY_MS);
+        }
+    }
+
+    async function scanLoopIteration() {
         if (state.shouldStop) {
             state.isRunning = false;
             saveScannerPosition(state.currentInstanceId);
@@ -837,34 +863,39 @@ export async function startScanner(overrides?: Partial<ScannerConfig>): Promise<
             state.consecutiveMisses = 0;
             writeScannerStats();
 
-            // Pause, then retry missed IDs
+            // Pause, then retry missed IDs. The callback runs outside the
+            // guarded iteration, so it needs its own error guard.
             setTimeout(async () => {
-                if (missedIdsSet.size >= RETRY_THRESHOLD) {
-                    console.log(`[SCANNER] 🔄 Missed IDs set reached ${missedIdsSet.size}. Retrying...`);
-                    const idsToRetry = Array.from(missedIdsSet);
-                    missedIdsSet.clear();
-                    const retryResult = await retryMissedIds(clientPool, idsToRetry, config.workers);
+                try {
+                    if (missedIdsSet.size >= RETRY_THRESHOLD) {
+                        console.log(`[SCANNER] 🔄 Missed IDs set reached ${missedIdsSet.size}. Retrying...`);
+                        const idsToRetry = Array.from(missedIdsSet);
+                        missedIdsSet.clear();
+                        const retryResult = await retryMissedIds(clientPool, idsToRetry, config.workers);
 
-                    state.totalRaidsFound += retryResult.retryRaidsFound;
-                    addMissedIds(retryResult.stillMissingIds);
+                        state.totalRaidsFound += retryResult.retryRaidsFound;
+                        addMissedIds(retryResult.stillMissingIds);
 
-                    console.log(
-                        `[SCANNER] 🔄 Retry complete: ${retryResult.retryRaidsFound} raids found. ` +
-                        `${retryResult.stillMissing} still missing. Set size: ${missedIdsSet.size}` +
-                            `${missedIdsDroppedDueToCap > 0 ? ` (${missedIdsDroppedDueToCap} total dropped due to cap)` : ''}`
-                    );
+                        console.log(
+                            `[SCANNER] 🔄 Retry complete: ${retryResult.retryRaidsFound} raids found. ` +
+                            `${retryResult.stillMissing} still missing. Set size: ${missedIdsSet.size}` +
+                                `${missedIdsDroppedDueToCap > 0 ? ` (${missedIdsDroppedDueToCap} total dropped due to cap)` : ''}`
+                        );
 
-                    if (retryResult.systemDisabled) {
-                        await waitForBungieMaintenancePause('scanner', () => state.shouldStop);
+                        if (retryResult.systemDisabled) {
+                            await waitForBungieMaintenancePause('scanner', () => state.shouldStop);
+                        }
+
+                        if (retryResult.fatalNoClients) {
+                            console.error('[SCANNER] All scanner API keys were disabled during retry processing.');
+                            state.isRunning = false;
+                            saveScannerPosition(state.currentInstanceId);
+                            writeScannerStats();
+                            return;
+                        }
                     }
-
-                    if (retryResult.fatalNoClients) {
-                        console.error('[SCANNER] All scanner API keys were disabled during retry processing.');
-                        state.isRunning = false;
-                        saveScannerPosition(state.currentInstanceId);
-                        writeScannerStats();
-                        return;
-                    }
+                } catch (error) {
+                    console.error('[SCANNER] Missed-ID retry pass failed; resuming scan loop:', error);
                 }
 
                 scanLoop();
