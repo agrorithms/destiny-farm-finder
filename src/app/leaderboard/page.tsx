@@ -18,8 +18,12 @@ interface LeaderboardEntry {
     membershipType: number;
     displayName: string;
     completions: number;
+    /** Competition rank from the server (ties share a rank number). */
+    rank: number;
     /** Rank change vs when the page was opened (positive = moved up). */
     rankDelta?: number;
+    /** Entered the board mid-session and hasn't changed rank since. */
+    isNew?: boolean;
     /** Fetch sequence number of the last time this row's rank/clears changed. */
     changeStamp?: number;
 }
@@ -84,6 +88,8 @@ export default function LeaderboardPage() {
     // filter combo ("since you opened this page"), not the previous refresh.
     const baselineRef = useRef<{ comboKey: string; ranks: Map<string, number> } | null>(null);
     const prevRowsRef = useRef<Map<string, { rank: number; completions: number; changeStamp?: number }>>(new Map());
+    // Players who entered the board mid-session; they wear NEW until their rank first changes.
+    const newEntrantsRef = useRef<Set<string>>(new Set());
 
     const annotateMovement = useCallback((result: LeaderboardResponse, comboKey: string, fetchSeq: number) => {
         const scopes: Array<[string, LeaderboardEntry[]]> = result.mode === 'aggregate'
@@ -94,35 +100,43 @@ export default function LeaderboardPage() {
             // Filters changed (or first load): reset and capture a fresh baseline.
             const ranks = new Map<string, number>();
             for (const [scope, entries] of scopes) {
-                entries.forEach((entry, index) => ranks.set(`${scope}:${entry.membershipId}`, index + 1));
+                entries.forEach((entry) => ranks.set(`${scope}:${entry.membershipId}`, entry.rank));
             }
             baselineRef.current = { comboKey, ranks };
+            newEntrantsRef.current = new Set();
             prevRowsRef.current = new Map(
-                scopes.flatMap(([scope, entries]) => entries.map((entry, index): [string, { rank: number; completions: number }] => [
+                scopes.flatMap(([scope, entries]) => entries.map((entry): [string, { rank: number; completions: number }] => [
                     `${scope}:${entry.membershipId}`,
-                    { rank: index + 1, completions: entry.completions },
+                    { rank: entry.rank, completions: entry.completions },
                 ]))
             );
             return result;
         }
 
         const baseline = baselineRef.current.ranks;
+        const newEntrants = newEntrantsRef.current;
         const prevRows = prevRowsRef.current;
         const nextRows = new Map<string, { rank: number; completions: number; changeStamp?: number }>();
 
         for (const [scope, entries] of scopes) {
-            entries.forEach((entry, index) => {
+            entries.forEach((entry) => {
                 const key = `${scope}:${entry.membershipId}`;
-                const rank = index + 1;
+                const rank = entry.rank;
                 const baselineRank = baseline.get(key);
                 if (baselineRank === undefined) {
-                    // New entrant: no badge yet, but track them from here on.
+                    // Mid-session entrant: NEW badge until their rank first changes.
                     baseline.set(key, rank);
+                    newEntrants.add(key);
+                    entry.isNew = true;
                 } else if (baselineRank !== rank) {
                     entry.rankDelta = baselineRank - rank;
+                    newEntrants.delete(key);
+                } else if (newEntrants.has(key)) {
+                    entry.isNew = true;
                 }
                 const prev = prevRows.get(key);
-                const changed = prev !== undefined && (prev.rank !== rank || prev.completions !== entry.completions);
+                // prev === undefined here means a mid-session entrant — flash their arrival.
+                const changed = prev === undefined || prev.rank !== rank || prev.completions !== entry.completions;
                 entry.changeStamp = changed ? fetchSeq : prev?.changeStamp;
                 nextRows.set(key, { rank, completions: entry.completions, changeStamp: entry.changeStamp });
             });
