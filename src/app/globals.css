@@ -74,7 +74,7 @@ body {
   animation: stat-flash 1s ease-out;
 }
 
-/* One-shot highlight for leaderboard rows whose rank/clears changed on a refresh. */
+/* One-shot highlight for items that changed on a refresh (leaderboard rows, new session cards). */
 @keyframes row-flash {
   from {
     background-color: color-mix(in srgb, var(--ui-accent) 18%, transparent);
@@ -83,6 +83,33 @@ body {
 
 .row-flash {
   animation: row-flash 2s ease-out;
+}
+
+/* View Transitions (active-sessions card reflow): the browser default is a snappy
+   0.25s, which reads as an abrupt blink — glide instead. */
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 350ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* View-transition snapshots paint in a top layer above the whole page, so without
+   this the animating cards would slide OVER the sticky nav. Naming the nav gives it
+   its own snapshot, stacked above the card groups. */
+.vt-site-nav {
+  view-transition-name: site-nav;
+}
+
+::view-transition-group(site-nav) {
+  z-index: 50;
+}
+
+/* Ended session cards linger dimmed, then fade out before removal.
+   Duration must match ENDED_FADE_MS in active-sessions/page.tsx. */
+.session-fade-out {
+  opacity: 0;
+  transition: opacity 1.5s ease;
 }
 
 @layer components {

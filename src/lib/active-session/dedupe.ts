@@ -5,6 +5,7 @@
 // Both the /active-sessions API (display list) and the OG cards (live count) must collapse
 // these the same way, or the numbers drift.
 import { getActiveSessions } from '../db/queries';
+import { haveSameMembers, isSubset, uniqueSortedMemberIds } from './member-set';
 
 /** Minimal fields needed to decide whether two rows are the same fireteam session. */
 export interface DedupeKey {
@@ -15,24 +16,6 @@ export interface DedupeKey {
     checkedAt: number;
     /** ISO timestamp; tiebreaker after checkedAt. */
     startedAt: string;
-}
-
-function uniqueSortedMemberIds(ids: string[]): string[] {
-    return Array.from(new Set(ids.map((id) => String(id || '')).filter((id) => id.length > 0))).sort();
-}
-
-function haveSameMembers(a: string[], b: string[]): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) return false;
-    }
-    return true;
-}
-
-function isSubset(subset: string[], superset: string[]): boolean {
-    if (subset.length > superset.length) return false;
-    const supersetSet = new Set(superset);
-    return subset.every((id) => supersetSet.has(id));
 }
 
 /**

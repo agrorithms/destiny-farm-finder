@@ -62,7 +62,7 @@ export default function RootLayout({
         <link rel="manifest" href="/manifest.json"></link>
       </head>
       <body className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col">
-        <nav className="ui-nav-surface border-b backdrop-blur-sm sticky top-0 z-50">
+        <nav className="vt-site-nav ui-nav-surface border-b backdrop-blur-sm sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-8">
             <div className="flex items-center gap-3 lg:gap-6 min-w-0 lg:flex-1">
               <Link href="/" className="text-base lg:text-lg font-bold ui-text-primary hover:text-[var(--ui-accent)] transition-colors shrink-0">

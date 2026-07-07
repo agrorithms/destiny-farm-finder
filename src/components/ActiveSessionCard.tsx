@@ -20,6 +20,8 @@ interface ActiveSession {
 
 interface ActiveSessionCardProps {
     session: ActiveSession;
+    /** 'new' = appeared since the last refresh; 'ended' = gone from the latest poll, held one cycle before removal. */
+    badge?: 'new' | 'ended';
 }
 
 function getDisplayName(member: PartyMember): string {
@@ -59,7 +61,7 @@ function getElapsedTime(startedAt: string): string {
     return `${minutes}m`;
 }
 
-export default function ActiveSessionCard({ session }: ActiveSessionCardProps) {
+export default function ActiveSessionCard({ session, badge }: ActiveSessionCardProps) {
     const visibleMembers = compactPartyMembers(session.partyMembers);
 
     return (
@@ -68,8 +70,26 @@ export default function ActiveSessionCard({ session }: ActiveSessionCardProps) {
                 <h3 className="text-sm font-bold text-blue-400">
                     {session.raidName}
                 </h3>
-                <span className="text-xs ui-text-muted">
-                    {getElapsedTime(session.startedAt)} elapsed
+                <span className="flex items-center gap-2">
+                    {badge === 'new' && (
+                        <span
+                            className="text-[0.65rem] font-semibold text-yellow-600 dark:text-yellow-400"
+                            title="Appeared since the last refresh"
+                        >
+                            NEW
+                        </span>
+                    )}
+                    {badge === 'ended' && (
+                        <span
+                            className="text-[0.65rem] font-semibold uppercase ui-text-muted"
+                            title="No longer active — removed on the next refresh"
+                        >
+                            Ended
+                        </span>
+                    )}
+                    <span className="text-xs ui-text-muted">
+                        {getElapsedTime(session.startedAt)} elapsed
+                    </span>
                 </span>
             </div>
 
