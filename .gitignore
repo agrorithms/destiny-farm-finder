@@ -54,6 +54,7 @@ data/*.db
 data/manifest-cache.json
 data/*.db-wal
 data/*.db-shm
+data/.*-litestream/
 
 #cleanup
 scripts/cleanup/*

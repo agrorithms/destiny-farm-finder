@@ -1,0 +1,23 @@
+# Litestream v0.5.x config for prod — copy to /etc/litestream.yml on the server,
+# fill in the R2 credentials, then `chmod 600 /etc/litestream.yml` (it holds the secret).
+# Runs as the systemd service installed by the litestream .deb:
+#   sudo systemctl enable litestream && sudo systemctl start litestream
+#
+# Restore runbook: see "Backups" in CLAUDE.md.
+
+snapshot:
+  interval: 24h    # new full snapshot daily
+  retention: 72h   # point-in-time history kept; drop to 48h if R2 usage crowds the 10 GB free tier
+
+dbs:
+  - path: /home/ubuntu/destiny-farm-finder/data/raid-tracker.db
+    replica:
+      type: s3
+      bucket: destiny-farm-finder-backups
+      path: raid-tracker
+      endpoint: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+      region: auto
+      access-key-id: <R2_ACCESS_KEY_ID>
+      secret-access-key: <R2_SECRET_ACCESS_KEY>
+      # If R2 returns 403/301 errors on startup, uncomment:
+      # force-path-style: true
