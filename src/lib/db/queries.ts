@@ -461,15 +461,38 @@ export function enqueueCrawl(
     tx(players);
 }
 
-/** Drain up to `limit` rows from the crawl queue, highest priority + oldest first. */
+/**
+ * Drain up to `limit` rows from the crawl queue, highest priority + oldest first.
+ * Players currently backing off (players.next_eligible_at in the future — crawl-failure or
+ * privacy backoff) are dropped instead of drained: repeated profile views of e.g. a private
+ * player must not bypass the backoff. The organic bucket crawl retries them once eligible.
+ */
 export function drainCrawlQueue(limit: number): CrawlQueueRow[] {
     const db = getDb();
+    db.prepare(`
+    DELETE FROM crawl_queue
+    WHERE EXISTS (
+      SELECT 1 FROM players p
+      WHERE p.membership_id = crawl_queue.membership_id
+        AND p.next_eligible_at IS NOT NULL AND p.next_eligible_at > unixepoch()
+    )
+  `).run();
     return db.prepare(`
     SELECT membership_id AS membershipId, membership_type AS membershipType, display_name AS displayName
     FROM crawl_queue
     ORDER BY priority DESC, enqueued_at ASC
     LIMIT ?
   `).all(limit) as CrawlQueueRow[];
+}
+
+/** True when the player's crawl backoff (failure or privacy) has not yet expired. */
+export function isPlayerCrawlBackingOff(membershipId: string): boolean {
+    const db = getDb();
+    const row = db.prepare(`
+    SELECT 1 FROM players
+    WHERE membership_id = ? AND next_eligible_at IS NOT NULL AND next_eligible_at > unixepoch()
+  `).get(membershipId);
+    return row !== undefined;
 }
 
 /** Delete processed queue rows (after crawl attempt, success or failure). */
