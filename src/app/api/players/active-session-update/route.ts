@@ -30,7 +30,6 @@ interface UpdateBody {
     membershipId?: unknown;
     membershipType?: unknown;
     profileResponse?: unknown;
-    privacyRestricted?: unknown;
 }
 
 function buildFallbackIdentity(membershipType: number, membershipId: string): PlayerIdentity {
@@ -124,7 +123,6 @@ export async function POST(request: NextRequest) {
     const membershipId = typeof body.membershipId === 'string' ? body.membershipId.trim() : '';
     const membershipType = Number(body.membershipType);
     const profileResponse = body.profileResponse;
-    const privacyRestricted = body.privacyRestricted === true;
 
     if (!/^\d{1,20}$/.test(membershipId)) {
         return withNoStore(NextResponse.json({ error: 'Invalid membershipId' }, { status: 400 }));
@@ -132,37 +130,21 @@ export async function POST(request: NextRequest) {
     if (!validMembershipTypes.has(membershipType)) {
         return withNoStore(NextResponse.json({ error: 'Invalid membershipType' }, { status: 400 }));
     }
-    if (!privacyRestricted && (!profileResponse || typeof profileResponse !== 'object')) {
+    if (!profileResponse || typeof profileResponse !== 'object') {
         return withNoStore(NextResponse.json({ error: 'Missing profileResponse' }, { status: 400 }));
     }
 
-    // The cooldown gates only the write path (parsing a supplied profileResponse). The
-    // privacyRestricted-flag request is a pure DB read (containing lookup) used by the
-    // teammate-resolution re-check, so it must not be throttled.
-    if (!privacyRestricted) {
-        const ip = getClientIp(request);
-        const rateKey = `${ip}:${membershipType}:${membershipId}`;
-        if (updateCooldown.isCoolingDown(rateKey)) {
-            return withNoStore(NextResponse.json({ skipped: true, reason: 'recently_updated' }));
-        }
-        updateCooldown.record(rateKey);
+    // Account-wide-private (1665) players never reach this endpoint: the browser can't fetch
+    // their profile, so it reads their containing session via
+    // GET /api/players/{type}/{id}?part=active&containing=1 instead.
+    const ip = getClientIp(request);
+    const rateKey = `${ip}:${membershipType}:${membershipId}`;
+    if (updateCooldown.isCoolingDown(rateKey)) {
+        return withNoStore(NextResponse.json({ skipped: true, reason: 'recently_updated' }));
     }
+    updateCooldown.record(rateKey);
 
     try {
-        // Account-wide privacy (client got a 1665 "No peeking" and sent the privacyRestricted
-        // flag with no profileResponse). We can't read their session, so fall back to any
-        // session that already contains them (from a teammate the crawler could see).
-        if (privacyRestricted) {
-            const identity = getPlayerIdentity(membershipId) || buildFallbackIdentity(membershipType, membershipId);
-            const containing = getActiveSessionContainingPlayer(membershipId, 900);
-            return withNoStore(NextResponse.json({
-                updated: false,
-                privacyRestricted: true,
-                player: buildPlayerPayload(identity),
-                activeSession: buildActiveSessionPayload(containing, identity, { enrichPartyMembers: true }),
-            }));
-        }
-
         const profile = profileResponse as DestinyProfileResponse;
 
         // Hydrate identity from component 100 (so untracked players become known).
