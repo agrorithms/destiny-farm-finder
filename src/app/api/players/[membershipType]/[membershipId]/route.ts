@@ -7,6 +7,7 @@ import {
     getPlayerRaidCompletionSummary,
     getPlayerRaidTeammateSummary,
     getPlayerRecentCompletions,
+    getActiveSessionContainingPlayer,
     getActiveSessionForPlayer,
     type PlayerIdentity,
 } from '@/lib/db/queries';
@@ -110,6 +111,19 @@ export async function GET(
 
         // Fast-path for profile header rendering: last-known active session from the DB.
         if (activeOnly) {
+            // containing=1: session that includes this player as a party member (stored via a
+            // public teammate). Used for privacy-restricted (1665) players whose own profile
+            // the browser can't read — a pure DB read, formerly a POST to active-session-update.
+            if (request.nextUrl.searchParams.get('containing') === '1') {
+                const containing = getActiveSessionContainingPlayer(membershipId, 900);
+                return withNoStore(NextResponse.json({
+                    player: buildPlayerPayload(identity, membershipType, membershipId),
+                    activeSession: buildActiveSessionPayload(containing, identityForSession, {
+                        enrichPartyMembers: true,
+                    }),
+                }));
+            }
+
             const enrichRequested = request.nextUrl.searchParams.get('enrich') === '1';
             const cachedSession = getActiveSessionForPlayer(membershipId, 600);
             return withNoStore(NextResponse.json({

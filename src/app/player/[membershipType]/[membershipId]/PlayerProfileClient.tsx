@@ -170,6 +170,25 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
     const [expandedTeammateRaids, setExpandedTeammateRaids] = useState<Set<string>>(new Set());
     const hasQueuedOnIdentity = useRef<string | null>(null);
 
+    // Fire-and-forget: queue a background crawl once per profile visit so the next visitor
+    // (and the next load) sees fresher data. Deferred until the live privacy check settles:
+    // account-wide-private (1665) players are skipped since their history crawl is guaranteed
+    // to fail. Server enforces a per-player cooldown + crawl backoff.
+    const queueCrawlOnce = useCallback((opts?: { skip?: boolean }) => {
+        if (!membershipId || !membershipType) return;
+
+        const identityKey = `${membershipType}:${membershipId}`;
+        if (hasQueuedOnIdentity.current === identityKey) return;
+        hasQueuedOnIdentity.current = identityKey;
+        if (opts?.skip) return;
+
+        void fetch('/api/players/queue-crawl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', [PAGE_TOKEN_HEADER]: pageToken },
+            body: JSON.stringify({ membershipType: Number(membershipType), membershipId }),
+        }).catch(() => undefined);
+    }, [membershipId, membershipType, pageToken]);
+
     const fetchActiveSession = useCallback(async (opts?: { verify?: boolean }) => {
         if (!membershipType || !membershipId) return;
 
@@ -192,6 +211,8 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
                 setLiveChecking(true);
                 void verifyActiveSessionLive(membershipType, membershipId, pageToken)
                     .then((live) => {
+                        // Privacy status is now known — safe to decide on the background crawl.
+                        queueCrawlOnce({ skip: live?.accountPrivate === true });
                         if (!live) return;
                         if (live.player) setHeaderPlayer(live.player);
                         if (live.privacyRestricted) {
@@ -230,7 +251,9 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
                         setActiveSession(live.activeSession);
                     })
                     .catch((err) => {
-                        // Keep the DB baseline already on screen.
+                        // Keep the DB baseline already on screen. Non-privacy failure
+                        // (network etc.) → still queue the crawl (fail open).
+                        queueCrawlOnce();
                         console.error('Failed to verify live active session:', err);
                     })
                     .finally(() => setLiveChecking(false));
@@ -241,7 +264,7 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
         } finally {
             setActiveLoading(false);
         }
-    }, [membershipId, membershipType, pageToken]);
+    }, [membershipId, membershipType, pageToken, queueCrawlOnce]);
 
     const fetchProfile = useCallback(async (opts?: { refresh?: boolean }) => {
         if (!membershipType || !membershipId) return;
@@ -291,22 +314,6 @@ export default function PlayerProfileClient({ pageToken }: { pageToken: string }
 
         fetchProfile();
     }, [fetchProfile, membershipId, membershipType]);
-
-    // Fire-and-forget: queue a background crawl once per profile visit so the next visitor
-    // (and the next load) sees fresher data. Server enforces a per-player cooldown.
-    useEffect(() => {
-        if (!membershipId || !membershipType) return;
-
-        const identityKey = `${membershipType}:${membershipId}`;
-        if (hasQueuedOnIdentity.current === identityKey) return;
-        hasQueuedOnIdentity.current = identityKey;
-
-        void fetch('/api/players/queue-crawl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', [PAGE_TOKEN_HEADER]: pageToken },
-            body: JSON.stringify({ membershipType: Number(membershipType), membershipId }),
-        }).catch(() => undefined);
-    }, [membershipId, membershipType, pageToken]);
 
     const totalCompletions = useMemo(() => {
         return (profile?.summary || []).reduce((sum, row) => sum + row.completions, 0);
@@ -834,6 +841,9 @@ interface LiveSessionResult {
     player?: ProfilePlayer;
     activeSession: ActiveSession | null;
     privacyRestricted?: boolean;
+    /** Account-wide privacy (1665 "No peeking") — distinct from partial privacy, where the
+     *  profile is fetchable but current-activity data is withheld. */
+    accountPrivate?: boolean;
     provisionalSession?: ActiveSession;
     candidateMembers?: CandidateMember[];
     unresolvedMemberIds?: string[];
@@ -850,21 +860,18 @@ async function verifyActiveSessionLive(
     try {
         profileResponse = await fetchPlayerProfileClient(Number(membershipType), membershipId);
     } catch (err) {
-        // Account-wide privacy ("No peeking"): we can't read their profile at all. Ask the
-        // server for any session that already contains them (from a teammate) and flag privacy
+        // Account-wide privacy ("No peeking"): we can't read their profile at all. Read any
+        // session that already contains them (from a teammate) from the DB and flag privacy
         // so the profile page shows the "data is private" banner.
         if (isClientBungieError(err) && err.kind === 'privacy') {
-            const res = await fetch('/api/players/active-session-update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', [PAGE_TOKEN_HEADER]: pageToken },
-                body: JSON.stringify({ membershipType: Number(membershipType), membershipId, privacyRestricted: true }),
-            });
-            if (!res.ok) return { activeSession: null, privacyRestricted: true };
+            const res = await fetch(`/api/players/${membershipType}/${membershipId}?part=active&containing=1`);
+            if (!res.ok) return { activeSession: null, privacyRestricted: true, accountPrivate: true };
             const data = await res.json() as ActiveSessionUpdateResponse;
             return {
                 player: data.player,
                 activeSession: data.activeSession ?? null,
                 privacyRestricted: true,
+                accountPrivate: true,
                 unresolvedMemberIds: data.unresolvedMemberIds,
             };
         }
@@ -973,14 +980,10 @@ async function resolveFireteamActivity(
             continue;
         }
 
-        // Re-read (privacy flag = pure DB read, not cooldown-gated): did the teammate's stored
-        // session turn out to contain our private player?
+        // Re-read (pure DB read, not cooldown-gated): did the teammate's stored session turn
+        // out to contain our private player?
         try {
-            const res = await fetch('/api/players/active-session-update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', [PAGE_TOKEN_HEADER]: pageToken },
-                body: JSON.stringify({ membershipType: Number(membershipType), membershipId, privacyRestricted: true }),
-            });
+            const res = await fetch(`/api/players/${membershipType}/${membershipId}?part=active&containing=1`);
             if (res.ok) {
                 const data = await res.json() as ActiveSessionUpdateResponse;
                 if (data.activeSession) return data.activeSession;
