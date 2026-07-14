@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { enqueueCrawl } from '@/lib/db/queries';
+import { enqueueCrawl, isPlayerCrawlBackingOff } from '@/lib/db/queries';
 import { isDatabaseMaintenanceError } from '@/lib/db';
 import { withNoStore } from '@/lib/http/cache';
 import { getClientIp } from '@/lib/http/request-ip';
@@ -59,6 +59,13 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+        // Crawl-failure / privacy backoff (players.next_eligible_at): don't re-enqueue a
+        // player the crawler is deliberately leaving alone. drainCrawlQueue enforces this
+        // too; declining here keeps the queue clean and the reason observable.
+        if (isPlayerCrawlBackingOff(membershipId)) {
+            return withNoStore(NextResponse.json({ queued: false, reason: 'backing_off' }));
+        }
+
         enqueueCrawl([{ membershipId, membershipType, displayName }], 'profile-view');
         enqueueCooldown.record(key);
         return withNoStore(NextResponse.json({ queued: true }, { status: 202 }));

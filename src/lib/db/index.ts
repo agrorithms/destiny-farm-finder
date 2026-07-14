@@ -46,6 +46,11 @@ function configureDatabase(db: Database.Database): void {
     // the calling process's event loop blocks until the lock frees or the
     // timeout expires.
     db.pragma(`busy_timeout = ${busyTimeoutMs()}`);
+    // Truncate the WAL file back to 64 MB when a checkpoint resets it. Without a
+    // limit SQLite reuses the file but never shrinks it, so one write burst
+    // (e.g. a backlog cleanup churning scattered index pages) pins its GB-scale
+    // high-water mark on disk as dead space indefinitely.
+    db.pragma('journal_size_limit = 67108864');
 }
 
 export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMaintenanceError {

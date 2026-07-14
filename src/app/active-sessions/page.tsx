@@ -30,7 +30,7 @@ interface RaidOption {
 }
 
 const AVAILABLE_RAIDS: RaidOption[] = [
-    //{ key: 'pantheon_insurrection_prime_revolutionary', name: "Pantheon: Insurrection Prime Revolutionary" },
+    { key: 'pantheon_insurrection_prime_revolutionary', name: "Pantheon: Insurrection Prime Revolutionary" },
     { key: 'pantheon_morgeth_surpassing', name: 'Pantheon: Morgeth Surpassing' },
     { key: 'pantheon_calus_resplendent', name: 'Pantheon: Calus Resplendent' },
     { key: 'the_desert_perpetual', name: 'The Desert Perpetual' },

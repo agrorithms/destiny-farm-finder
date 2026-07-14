@@ -1,44 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-
-interface MaintenanceStatus {
-    bungieMaintenanceActive?: boolean;
-    dbQuiesceActive?: boolean;
-}
+import { useLiveStats } from '@/hooks/useLiveStats';
 
 export default function BungieMaintenanceAlert() {
-    const [isActive, setIsActive] = useState(false);
+    const { stats } = useLiveStats();
 
-    useEffect(() => {
-        let cancelled = false;
-
-        const fetchStatus = () => {
-            fetch('/api/status')
-                .then((res) => res.json())
-                .then((status: MaintenanceStatus) => {
-                    if (!cancelled) {
-                        setIsActive(
-                            status.bungieMaintenanceActive === true || status.dbQuiesceActive === true
-                        );
-                    }
-                })
-                .catch((error) => {
-                    console.error('Failed to fetch Bungie maintenance status:', error);
-                    if (!cancelled) {
-                        setIsActive(false);
-                    }
-                });
-        };
-
-        fetchStatus();
-        const interval = setInterval(fetchStatus, 15000);
-
-        return () => {
-            cancelled = true;
-            clearInterval(interval);
-        };
-    }, []);
+    const isActive =
+        stats?.bungieMaintenanceActive === true ||
+        stats?.dbQuiesceActive === true ||
+        stats?.maintenance === true;
 
     if (!isActive) {
         return null;
