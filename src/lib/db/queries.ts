@@ -1249,22 +1249,42 @@ export function deleteSessionsContainingPlayer(membershipId: string): void {
 // CLEANUP QUERIES
 // =====================
 
-export function cleanupOldPGCRs(maxAgeHours: number = 6): { pgcrsDeleted: number; playersDeleted: number } {
+/**
+ * Delete one bounded batch of expired PGCRs (and their pgcr_players rows) in a single
+ * short transaction. A whole-backlog DELETE holds the write lock for its full duration
+ * and blocks this process's event loop (better-sqlite3 is synchronous), so the caller
+ * loops batches with a yield in between instead.
+ */
+export function deleteExpiredPGCRBatch(cutoffEpoch: number, batchSize: number): {
+    pgcrsDeleted: number;
+    playersDeleted: number;
+    done: boolean;
+} {
     const db = getDb();
-    const cutoff = Math.floor((Date.now() - maxAgeHours * 60 * 60 * 1000) / 1000);
 
-    const pgcrResult = db.prepare(`
-    DELETE FROM pgcr_players WHERE instance_id IN (
-      SELECT instance_id FROM pgcrs WHERE period < ?
-    )
-  `).run(cutoff);
+    const rows = db.prepare(
+        'SELECT instance_id FROM pgcrs WHERE period < ? LIMIT ?'
+    ).all(cutoffEpoch, batchSize) as { instance_id: string }[];
 
-    const playerResult = db.prepare('DELETE FROM pgcrs WHERE period < ?').run(cutoff);
+    if (rows.length === 0) {
+        return { pgcrsDeleted: 0, playersDeleted: 0, done: true };
+    }
 
-    return {
-        pgcrsDeleted: playerResult.changes,
-        playersDeleted: pgcrResult.changes,
-    };
+    const ids = rows.map((r) => r.instance_id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    const tx = db.transaction((instanceIds: string[]) => {
+        const playerResult = db.prepare(
+            `DELETE FROM pgcr_players WHERE instance_id IN (${placeholders})`
+        ).run(...instanceIds);
+        const pgcrResult = db.prepare(
+            `DELETE FROM pgcrs WHERE instance_id IN (${placeholders})`
+        ).run(...instanceIds);
+        return { pgcrsDeleted: pgcrResult.changes, playersDeleted: playerResult.changes };
+    });
+
+    const result = tx(ids);
+    return { ...result, done: rows.length < batchSize };
 }
 
 // =====================
@@ -1293,6 +1313,29 @@ export function getDbStats(): {
         totalPlayers: players,
         totalPGCRs: pgcrs,
         totalPGCRPlayers: pgcrPlayers,
+        activeSessions: sessions,
+        oldestPGCR: oldest?.p ? new Date(oldest.p * 1000).toISOString() : null,
+        newestPGCR: newest?.p ? new Date(newest.p * 1000).toISOString() : null,
+    };
+}
+
+/**
+ * Cheap subset of getDbStats for recurring logs (post-cleanup): active_sessions is a
+ * small table and MIN/MAX(period) are served by idx_pgcrs_period. Skips the three
+ * unfiltered COUNT(*) scans, which synchronously block the event loop for seconds.
+ */
+export function getDbStatsLite(): {
+    activeSessions: number;
+    oldestPGCR: string | null;
+    newestPGCR: string | null;
+} {
+    const db = getDb();
+
+    const sessions = (db.prepare('SELECT COUNT(*) as c FROM active_sessions').get() as { c: number } | undefined)?.c ?? 0;
+    const oldest = db.prepare('SELECT MIN(period) as p FROM pgcrs').get() as { p: number | null } | undefined;
+    const newest = db.prepare('SELECT MAX(period) as p FROM pgcrs').get() as { p: number | null } | undefined;
+
+    return {
         activeSessions: sessions,
         oldestPGCR: oldest?.p ? new Date(oldest.p * 1000).toISOString() : null,
         newestPGCR: newest?.p ? new Date(newest.p * 1000).toISOString() : null,
