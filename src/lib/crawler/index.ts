@@ -1,8 +1,9 @@
 import {
     getPlayersForSessionPolling,
     bulkUpsertPlayers,
-    cleanupOldPGCRs,
+    deleteExpiredPGCRBatch,
     getDbStats,
+    getDbStatsLite,
     drainCrawlQueue,
     deleteCrawlQueueRows,
     getPlayersInRecentBucket,
@@ -53,6 +54,8 @@ export interface CrawlerConfig {
     sessionPollingLimit: number;
     cleanupIntervalMs: number;
     cleanupMaxAgeHours: number;
+    cleanupBatchSize: number;
+    cleanupYieldMs: number;
     // DB-bounded pagination
     maxBackfillHours: number;
     hotRecrawlCount: number;
@@ -100,6 +103,10 @@ const DEFAULT_CONFIG: CrawlerConfig = {
     ),
     cleanupIntervalMs: 1800000, // 30 minutes
     cleanupMaxAgeHours: parseInt(process.env.CRAWLER_CLEANUP_MAX_AGE_HOURS || '720', 10),
+    // 500 keeps the per-batch write-lock hold sub-second even on cold-cache dev disks
+    // (2000 measured at 2-4s/batch on WSL2); prod steady state is ~4 batches per run.
+    cleanupBatchSize: Math.max(1, parseInt(process.env.CRAWLER_CLEANUP_BATCH_SIZE || '500', 10)),
+    cleanupYieldMs: Math.max(0, parseInt(process.env.CRAWLER_CLEANUP_YIELD_MS || '25', 10)),
     // DB-bounded pagination
     maxBackfillHours: parseInt(process.env.CRAWLER_BACKFILL_MAX_HOURS || '720', 10),
     hotRecrawlCount: parseInt(process.env.CRAWLER_HOT_RECRAWL_COUNT || '15', 10),
@@ -476,19 +483,45 @@ export async function startCrawler(overrides?: Partial<CrawlerConfig>): Promise<
         setTimeout(activeSessionLoop, waitTime);
     }
 
-    // Cleanup loop
+    // Cleanup loop. Deletes expired PGCRs in small per-batch transactions with a yield
+    // between batches: one whole-backlog DELETE would hold the write lock for minutes
+    // (starving the scanner into SQLITE_BUSY) and block this process's event loop,
+    // freezing the crawl/session loops and timing out their in-flight requests.
     async function cleanupLoop() {
         if (shouldStop) return;
 
         console.log(`\n🧹 Running cleanup...`);
 
         try {
-            const result = cleanupOldPGCRs(config.cleanupMaxAgeHours);
+            const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+            const cutoffEpoch = Math.floor(Date.now() / 1000) - config.cleanupMaxAgeHours * 3600;
+
+            let pgcrsDeleted = 0;
+            let playersDeleted = 0;
+            let batches = 0;
+
+            while (!shouldStop) {
+                const batch = deleteExpiredPGCRBatch(cutoffEpoch, config.cleanupBatchSize);
+                pgcrsDeleted += batch.pgcrsDeleted;
+                playersDeleted += batch.playersDeleted;
+                if (batch.pgcrsDeleted > 0) batches++;
+
+                if (batches > 0 && batches % 25 === 0 && batch.pgcrsDeleted > 0) {
+                    console.log(
+                        `🧹 Cleanup progress: ${pgcrsDeleted} PGCRs / ${playersDeleted} player entries removed (${batches} batches)...`
+                    );
+                }
+
+                if (batch.done) break;
+                await sleep(config.cleanupYieldMs);
+            }
+
             console.log(
-                `🧹 Cleanup: removed ${result.pgcrsDeleted} old PGCRs and ${result.playersDeleted} player entries`
+                `🧹 Cleanup: removed ${pgcrsDeleted} old PGCRs and ${playersDeleted} player entries` +
+                (batches > 1 ? ` in ${batches} batches` : '')
             );
 
-            const stats = getDbStats();
+            const stats = getDbStatsLite();
             console.log('📊 Database stats:', stats);
         } catch (error) {
             console.error('❌ Cleanup error:', error);

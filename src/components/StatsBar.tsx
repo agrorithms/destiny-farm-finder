@@ -2,16 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePageLiveStatus } from '@/hooks/usePageLiveStatus';
-
-interface LiveStats {
-    live: boolean;
-    secondsSinceHeartbeat: number | null;
-    fullClears24h: number;
-    activeRaidSessions: number;
-    maintenance?: boolean;
-}
-
-const POLL_INTERVAL_MS = 30000;
+import { useLiveStats, LIVE_STATS_POLL_INTERVAL_MS } from '@/hooks/useLiveStats';
 
 function formatSecondsAgo(seconds: number | null): string {
     if (seconds === null) return 'never';
@@ -45,36 +36,24 @@ function StatNumber({ value, flashStamp }: { value: number; flashStamp: number }
  */
 export default function StatsBar() {
     const pageStatus = usePageLiveStatus();
-    const [stats, setStats] = useState<LiveStats | null>(null);
-    const [statsFetchedAt, setStatsFetchedAt] = useState<Date | null>(null);
+    const { stats, fetchedAt: statsFetchedAt } = useLiveStats();
     const [flashStamps, setFlashStamps] = useState({ clears: 0, sessions: 0 });
     const [secondsAgo, setSecondsAgo] = useState(0);
     const prevCountsRef = useRef<{ clears: number; sessions: number } | null>(null);
 
     useEffect(() => {
-        const fetchStats = async () => {
-            try {
-                const res = await fetch('/api/live-stats');
-                const data: LiveStats = await res.json();
-                setStats(data);
-                setStatsFetchedAt(new Date());
-                const prev = prevCountsRef.current;
-                if (prev) {
-                    setFlashStamps((stamps) => ({
-                        clears: prev.clears !== data.fullClears24h ? stamps.clears + 1 : stamps.clears,
-                        sessions: prev.sessions !== data.activeRaidSessions ? stamps.sessions + 1 : stamps.sessions,
-                    }));
-                }
-                prevCountsRef.current = { clears: data.fullClears24h, sessions: data.activeRaidSessions };
-            } catch (err) {
-                console.error('Failed to fetch live stats:', err);
-            }
-        };
-
-        fetchStats();
-        const interval = setInterval(fetchStats, POLL_INTERVAL_MS);
-        return () => clearInterval(interval);
-    }, []);
+        if (!stats) {
+            return;
+        }
+        const prev = prevCountsRef.current;
+        if (prev) {
+            setFlashStamps((stamps) => ({
+                clears: prev.clears !== stats.fullClears24h ? stamps.clears + 1 : stamps.clears,
+                sessions: prev.sessions !== stats.activeRaidSessions ? stamps.sessions + 1 : stamps.sessions,
+            }));
+        }
+        prevCountsRef.current = { clears: stats.fullClears24h, sessions: stats.activeRaidSessions };
+    }, [stats]);
 
     // Ticking "Updated Xs ago". A new updatedAt is corrected on the next 1s tick.
     const updatedAtMs = (pageStatus?.lastUpdated ?? statsFetchedAt)?.getTime() ?? null;
@@ -87,7 +66,7 @@ export default function StatsBar() {
         return () => clearInterval(interval);
     }, [updatedAtMs]);
 
-    const refreshSec = pageStatus?.refreshIntervalSec ?? POLL_INTERVAL_MS / 1000;
+    const refreshSec = pageStatus?.refreshIntervalSec ?? LIVE_STATS_POLL_INTERVAL_MS / 1000;
 
     const liveLabel = stats?.maintenance
         ? 'Maintenance'
