@@ -99,6 +99,22 @@ export default async function AdminStatsPage() {
                         </span>
                         <span className="ui-text-muted">({formatSecondsAgo(stats.secondsSinceHeartbeat)})</span>
                     </div>
+                    <span className="ui-text-subtle">|</span>
+                    <div className="flex items-center gap-2">
+                        <span>Sessions</span>
+                        <div
+                            className={`w-2 h-2 rounded-full ${stats.secondsSinceSessionHeartbeat !== null && stats.secondsSinceSessionHeartbeat <= 900
+                                ? 'bg-green-500 animate-pulse'
+                                : 'bg-red-500'
+                                }`}
+                        />
+                        <span className="ui-text-muted">({formatSecondsAgo(stats.secondsSinceSessionHeartbeat)})</span>
+                        {stats.sessionWatchdogTrips > 0 && (
+                            <span className="ui-text-muted" title="Active-session poll watchdog trips (a poll abandoned for exceeding its time budget)">
+                                ⚠️ {stats.sessionWatchdogTrips} watchdog {stats.sessionWatchdogTrips === 1 ? 'trip' : 'trips'}
+                            </span>
+                        )}
+                    </div>
                 </div>
             </div>
 
