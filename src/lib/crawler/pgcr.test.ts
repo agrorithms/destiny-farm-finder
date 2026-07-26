@@ -15,10 +15,10 @@ import {
  * NOT COVERED HERE, DELIBERATELY: `ProcessedPGCR.isFullClear`. That field is
  * computed and returned but never read by anything — `fetchAndStorePGCR`
  * persists Bungie's raw `activityWasStartedFromBeginning` instead, and every
- * leaderboard filters on that column. The derivation is also wrong: Bungie no
- * longer sends `startingPhaseIndex` (absent on all 827k stored rows), so the
- * `=== undefined` branch fires unconditionally and reports every run as a full
- * clear. It is dead code slated for removal, so pinning its behaviour here would
+ * leaderboard filters on that column. The derivation is also wrong: Bungie now
+ * reports `startingPhaseIndex: 0` on every PGCR — including checkpoint runs, as
+ * the captured fixtures show — so the `=== 0` branch fires unconditionally and
+ * reports every run as a full clear. It is dead code slated for removal, so pinning its behaviour here would
  * only make that removal harder. The signal that actually decides leaderboard
  * membership is covered in tests/db/full-clear-flag.test.ts.
  * See docs/decisions.md.

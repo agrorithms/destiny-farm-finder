@@ -45,9 +45,11 @@ wrong. Across 827,076 rows:
 | `activity_was_started_from_beginning` | `0` → 568,648 · `1` → 258,426 |
 | `completed` | `0` → 456,009 · `1` → 371,070 |
 
-Bungie has stopped sending `startingPhaseIndex` entirely. So the `startingPhaseIndex === undefined`
-branch fires unconditionally and `isFullClear` is `true` for **100%** of runs — including the
-568,648 that are genuinely not full clears. It is inert only because nothing consumes it. Wired
+Bungie now reports `startingPhaseIndex: 0` on every PGCR. Confirmed against live captures in
+`tests/fixtures/`, including checkpoint runs where `activityWasStartedFromBeginning` is `false` —
+the field is present but no longer discriminates anything. So the `startingPhaseIndex === 0` branch
+fires unconditionally and `isFullClear` is `true` for **100%** of runs, including the 568,648 that
+are genuinely not full clears. It is inert only because nothing consumes it. Wired
 up, it would inflate every leaderboard by roughly 2.2×.
 
 Consequence for fixtures: the brief's requested "checkpoint run (`startingPhaseIndex > 0`)"

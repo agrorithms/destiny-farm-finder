@@ -1,6 +1,9 @@
 import { getDb } from '@/lib/db';
 import { insertFullPGCR, upsertPlayer } from '@/lib/db/queries';
 import { getRaidKeyFromHash } from '@/lib/bungie/manifest';
+import { processPGCR } from '@/lib/crawler/pgcr';
+import { readActivityDurationSeconds, readEntryStartSeconds } from '@/lib/bungie/pgcr-stats';
+import type { DestinyPostGameCarnageReportData } from '@/lib/bungie/types';
 import { RAID_HASH } from './pgcr-builder';
 
 /**
@@ -67,8 +70,8 @@ export function seedRun(options: SeedRunOptions): void {
             activityHash,
             raidKey,
             period,
-            // Always 0: Bungie no longer sends startingPhaseIndex, and the writer
-            // coerces it with `|| 0` anyway. Checkpoint runs are expressed through
+            // Always 0: Bungie reports startingPhaseIndex as 0 on every run, and the
+            // writer coerces it with `|| 0` anyway. Checkpoint runs are expressed through
             // startedFromBeginning, which is what the leaderboards actually filter on.
             startingPhaseIndex: 0,
             activityWasStartedFromBeginning: startedFromBeginning,
@@ -112,6 +115,48 @@ export function seedPlayer(
         bungieGlobalDisplayName,
         bungieGlobalDisplayNameCode,
     });
+}
+
+/**
+ * Ingests a real captured PGCR through the same path the crawler uses.
+ *
+ * Mirrors the body of `fetchAndStorePGCR` minus the network call — the mapping
+ * from Bungie's entry shape to our storage shape is duplicated there rather than
+ * extracted, so this reproduces it exactly. If that mapping ever changes, this
+ * must change with it.
+ */
+export function seedFromFixture(pgcr: DestinyPostGameCarnageReportData, source = 'test'): void {
+    const processed = processPGCR(pgcr);
+
+    insertFullPGCR(
+        {
+            instanceId: processed.instanceId,
+            activityHash: processed.activityHash,
+            raidKey: processed.raidKey,
+            period: processed.period,
+            startingPhaseIndex: pgcr.startingPhaseIndex || 0,
+            activityWasStartedFromBeginning: pgcr.activityWasStartedFromBeginning || false,
+            completed: processed.completed,
+            playerCount: pgcr.entries.length,
+            source,
+            activityDurationSeconds: readActivityDurationSeconds(pgcr.entries),
+        },
+        pgcr.entries.map((entry) => ({
+            instanceId: processed.instanceId,
+            membershipId: entry.player.destinyUserInfo.membershipId,
+            membershipType: entry.player.destinyUserInfo.membershipType,
+            displayName: entry.player.destinyUserInfo.displayName,
+            bungieGlobalDisplayName: entry.player.destinyUserInfo.bungieGlobalDisplayName,
+            characterClass: entry.player.characterClass || 'Unknown',
+            lightLevel: entry.player.lightLevel || 0,
+            completed: entry.values?.completed?.basic?.value === 1,
+            kills: entry.values?.kills?.basic?.value || 0,
+            deaths: entry.values?.deaths?.basic?.value || 0,
+            assists: entry.values?.assists?.basic?.value || 0,
+            timePlayedSeconds: entry.values?.timePlayedSeconds?.basic?.value || 0,
+            startSeconds: readEntryStartSeconds(entry),
+        }))
+    );
 }
 
 /** Raw row read, for asserting what the writer actually persisted. */

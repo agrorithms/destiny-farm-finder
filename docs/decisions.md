@@ -157,9 +157,10 @@ way that were **not** fixed.
 `fetchAndStorePGCR` persists Bungie's raw `activityWasStartedFromBeginning`, and every leaderboard
 filters on that column (`leaderboard-cache.ts:175`, `queries.ts:760/781/820/855`).
 
-It is also incorrect. Bungie has stopped sending `startingPhaseIndex` — it is `0` on **all**
-827,076 stored rows, meaning absent — so the `startingPhaseIndex === undefined` branch fires
-unconditionally and the field is `true` for 100% of runs. Of those, 568,648 have
+It is also incorrect. Bungie now reports `startingPhaseIndex: 0` on every PGCR — verified against
+live API captures, including confirmed checkpoint runs where `activityWasStartedFromBeginning` is
+`false`. The field is present but inert. So the `startingPhaseIndex === 0` branch fires
+unconditionally and `isFullClear` is `true` for 100% of runs. Of those, 568,648 have
 `activity_was_started_from_beginning = 0`, i.e. they are checkpoint runs. Wiring this field into
 the writer would inflate every full-clear leaderboard by roughly 2.2×.
 
@@ -205,3 +206,34 @@ is where a wrong row set would now come from.
 456,009 of 827,076 stored PGCRs (55%) have no player with `completed = 1`. Not a defect, but worth
 knowing before reasoning about any query that joins through completions: the "no completions" case
 is the common path, not an edge case.
+
+### Addendum, same day — what capturing real fixtures corrected
+
+Three claims above were inferred from the database and turned out to be wrong at the source. The
+conclusions held; the mechanisms did not.
+
+**`startingPhaseIndex` is sent, and is always `0`.** Not absent, as first written. It is present on
+every captured PGCR including three confirmed checkpoint runs
+(`activityWasStartedFromBeginning: false`). The database showed `0` everywhere because the writer
+coerces with `|| 0`, which had flattened the evidence. So `isFullClear`'s `=== 0` branch fires
+rather than its `=== undefined` branch — the field is still `true` for 100% of runs, so nothing
+about the defect changes.
+
+**A player can appear several times in one report.** `pgcr-multi-character-garden.json` has six
+entries belonging to **two** people, three characters each. `pgcr_players` is keyed
+`(instance_id, membership_id)` with `INSERT OR IGNORE`, so only each player's *first* entry is
+stored: that player's `time_played_seconds` records 981s when their longest character played 1494s.
+`kills`, `deaths`, `assists` and `time_played_seconds` are written but **read nowhere in `src/`**,
+so this is latent rather than user-visible. Duration derivation is unaffected — it runs on the
+in-memory entries before the dedupe.
+
+**Bungie can withhold identity entirely.** `pgcr-missing-bungie-name.json` has nineteen entries,
+every one arriving as `isPublic: false`, `membershipType: 0`, with **no `displayName` and no
+`bungieGlobalDisplayName`**. This is not "the global name is missing so fall back to the platform
+name" — there is no fallback left, and `formatDisplayName` ends up rendering a raw membership id.
+Ingestion handles it correctly: all nineteen rows store with NULL names rather than being rejected,
+which is right, since the run itself is real.
+
+Note also that `types.ts` declares `UserInfoCard.displayName` and
+`DestinyPostGameCarnageReportData.startingPhaseIndex` as required, and both are optional in
+practice. The type is more confident than the API.

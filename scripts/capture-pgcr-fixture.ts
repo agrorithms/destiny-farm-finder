@@ -51,14 +51,14 @@ const TARGETS: Target[] = [
         why: 'Some entries completed, some did not. `completed` is per-entry; ANY completion counts.',
     },
     {
-        file: 'pgcr-duration-divergence-garden.json',
+        file: 'pgcr-multi-character-garden.json',
         instanceId: '17091200569',
-        why: 'Activity duration (~2069s) far exceeds the longest per-player time (~981s). Tier 1 vs Tier 2 divergence.',
+        why: 'Six entries but only two distinct players — three characters each. Also a mild Tier 1 vs Tier 2 duration gap (2069s vs 2037s).',
     },
     {
-        file: 'pgcr-no-duration-crotas-end.json',
+        file: 'pgcr-absurd-duration-crotas-end.json',
         instanceId: '17091316490',
-        why: 'Stored with a NULL ended_at, so no usable duration was derivable. Exercises the Tier 3 fallback.',
+        why: 'Reports a 27384s (7.6h) activity duration for a run where nobody played past 1093s. The megalobby corruption that FUTURE_ENDED_SKEW_SECONDS exists to reject.',
     },
     {
         file: 'pgcr-missing-bungie-name.json',

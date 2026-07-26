@@ -11,10 +11,10 @@ import { readPgcrRow, seedRun } from '../helpers/seed';
  *   pgcrs.activity_was_started_from_beginning   persisted, and what every
  *                                               leaderboard filters on
  *
- * The first is dead code. Bungie stopped sending `startingPhaseIndex` — it is
- * absent on all 827k stored rows — so `isFullClear`'s `=== undefined` branch
- * fires unconditionally and reports every run as a full clear, including the
- * 568k that are checkpoint runs. Nothing reads it, so nothing breaks today;
+ * The first is dead code. Bungie reports `startingPhaseIndex: 0` on every PGCR,
+ * including confirmed checkpoint runs (see tests/real-pgcrs.test.ts), so
+ * `isFullClear`'s `=== 0` branch fires unconditionally and reports every run as
+ * a full clear — including the 568k that are checkpoint runs. Nothing reads it, so nothing breaks today;
  * wiring it up would inflate every leaderboard by roughly 2.2x.
  *
  * These tests pin the signal that ships, so that if anyone ever "tidies" the
@@ -43,8 +43,8 @@ describe('the persisted full-clear flag', () => {
     });
 
     it('stores a zero starting phase index regardless of the run type', () => {
-        // Bungie no longer sends startingPhaseIndex and the writer coerces it with
-        // `|| 0`, so the column is 0 for every row in production. Pinned so nobody
+        // Bungie reports startingPhaseIndex as 0 for every run and the writer coerces
+        // it with `|| 0` anyway, so the column is 0 for every row in production. Pinned so nobody
         // writes a query that assumes this column still discriminates anything.
         seedRun({ instanceId: '1', completedBy: ['p1'], startedFromBeginning: true });
         seedRun({ instanceId: '2', completedBy: ['p1'], startedFromBeginning: false });

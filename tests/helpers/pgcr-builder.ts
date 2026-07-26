@@ -108,8 +108,9 @@ export interface PGCROptions {
     period?: string;
     activityWasStartedFromBeginning?: boolean;
     /**
-     * Bungie no longer sends this — it is absent on all 827k stored rows. Pass
-     * `null` to reproduce reality; pass a number only when testing the legacy path.
+     * Bungie reports this as 0 on every real PGCR, including checkpoint runs, so it
+     * no longer distinguishes anything. Pass `null` to omit it entirely; pass a
+     * number only when testing the legacy path.
      */
     startingPhaseIndex?: number | null;
     entries?: DestinyPostGameCarnageReportEntry[];
