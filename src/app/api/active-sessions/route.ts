@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { formatBungieDisplayName, getActiveSessions } from '@/lib/db/queries';
+import { formatBungieDisplayName } from '@/lib/db/queries';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
 import { getDb, isDatabaseMaintenanceError } from '@/lib/db';
 import { getActivityDisplayName } from '@/lib/utils/activity';
-import { dedupeActiveSessions } from '@/lib/active-session/dedupe';
+import {
+    ACTIVE_SESSION_DISPLAY_LIMIT,
+    compareSessionsForDisplay,
+    getDedupedActiveSessions,
+} from '@/lib/active-session/dedupe';
 import { withCache, withNoStore } from '@/lib/http/cache';
 
 interface PlayerLookupRow {
@@ -56,7 +60,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
 
     const raidKey = searchParams.get('raid') || undefined;
-    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const limit = parseInt(searchParams.get('limit') || String(ACTIVE_SESSION_DISPLAY_LIMIT), 10);
 
     if (raidKey) {
         const raids = getAllRaidDefinitions();
@@ -68,31 +72,50 @@ export async function GET(request: NextRequest) {
         }
     }
 
-    if (limit < 1 || limit > 200) {
+    // Number.isInteger rejects a non-numeric `limit`: parseInt returns NaN, and every NaN
+    // comparison is false, so a bare range check would let it through and slice(0, NaN)
+    // would return zero sessions while reporting a non-zero total.
+    if (!Number.isInteger(limit) || limit < 1 || limit > ACTIVE_SESSION_DISPLAY_LIMIT) {
         return withNoStore(NextResponse.json(
-            { error: 'limit must be between 1 and 200' },
+            { error: `limit must be between 1 and ${ACTIVE_SESSION_DISPLAY_LIMIT}` },
             { status: 400 }
         ));
     }
 
     try {
-        const rawSessions = getActiveSessions(raidKey, limit, true);
+        // Dedupe into fireteams FIRST, then enrich only the survivors. Enriching before dedupe
+        // meant looking up names for ~6000 membership ids to render ~250 cards, and pushed the
+        // IN(...) clause toward SQLite's bind-parameter ceiling.
+        const dedupedSessions = getDedupedActiveSessions(raidKey);
         const db = getDb();
 
-        // Build a set of all membership IDs across all sessions
+        const parsedAll = dedupedSessions.map((raw) => ({
+            raw,
+            partyMembers: parsePartyMembers(raw.partyMembersJson),
+        }));
+
+        parsedAll.sort((a, b) => compareSessionsForDisplay(
+            { memberCount: a.partyMembers.length, startedAt: a.raw.startedAt },
+            { memberCount: b.partyMembers.length, startedAt: b.raw.startedAt }
+        ));
+
+        const total = parsedAll.length;
+        if (total > limit) {
+            console.warn(
+                `[SESSIONS] Display cap hit: ${total} live fireteams, showing ${limit}.`
+                + ` Raise ACTIVE_SESSION_DISPLAY_LIMIT (currently ${ACTIVE_SESSION_DISPLAY_LIMIT}) if this persists.`
+            );
+        }
+        const parsedSessions = parsedAll.slice(0, limit);
+
+        // Build a set of membership IDs across the sessions we will actually render
         const allMembershipIds = new Set<string>();
-        const parsedSessions: Array<{ raw: (typeof rawSessions)[number]; partyMembers: ParsedPartyMember[] }> = [];
-
-        for (const session of rawSessions) {
-            const partyMembers = parsePartyMembers(session.partyMembersJson);
-
+        for (const { partyMembers } of parsedSessions) {
             for (const member of partyMembers) {
                 if (member.membershipId) {
                     allMembershipIds.add(member.membershipId);
                 }
             }
-
-            parsedSessions.push({ raw: session, partyMembers });
         }
 
         // Batch lookup display names from the players table
@@ -164,23 +187,23 @@ export async function GET(request: NextRequest) {
             };
         });
 
-        const deduped = dedupeActiveSessions(sessions, (session) => ({
-            activityHash: session.activityHash,
-            memberIds: session.partyMembers.map((m) => m.membershipId),
-            checkedAt: session.checkedAt,
-            startedAt: session.startedAt,
-        }));
-
+        // Already deduped upstream — `sessions` is one entry per fireteam.
         return withCache(NextResponse.json({
             raidKey: raidKey || 'all',
-            count: deduped.length,
-            sessions: deduped,
+            count: sessions.length,
+            // `total` is every live fireteam; `shown` is how many fit under the display cap.
+            // They differ only when the cap bites, which the page can surface to the user.
+            total,
+            shown: sessions.length,
+            sessions,
         }), 10, 30);
     } catch (error) {
         if (isDatabaseMaintenanceError(error)) {
             return withNoStore(NextResponse.json({
                 raidKey: raidKey || 'all',
                 count: 0,
+                total: 0,
+                shown: 0,
                 sessions: [],
                 maintenance: true,
                 message: 'Database maintenance is in progress. Active sessions are temporarily unavailable.',
