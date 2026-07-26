@@ -4,7 +4,7 @@
 // instance_id), so a fireteam with N tracked members yields N rows for the SAME session.
 // Both the /active-sessions API (display list) and the OG cards (live count) must collapse
 // these the same way, or the numbers drift.
-import { getActiveSessions } from '../db/queries';
+import { getActiveSessions, type ActiveSessionDbRow } from '../db/queries';
 
 /** Minimal fields needed to decide whether two rows are the same fireteam session. */
 export interface DedupeKey {
@@ -93,21 +93,54 @@ function parseMemberIds(partyMembersJson: string | null | undefined): string[] {
     }
 }
 
+// Maximum fireteams rendered on the page. Denominated in FIRETEAMS, not rows — the previous
+// row-denominated limit collapsed to ~110 cards and hid every long-running raid. See docs/adr/0001.
+export const ACTIVE_SESSION_DISPLAY_LIMIT = Math.max(
+    1,
+    parseInt(process.env.ACTIVE_SESSION_DISPLAY_LIMIT || '600', 10)
+);
+
 /**
- * Accurate count of distinct active raid fireteams (de-duped). This is the number the
- * /active-sessions page displays; OG cards use it so their count matches. Returns 0 on a
- * database-maintenance error rather than throwing.
+ * Every distinct active raid fireteam currently live, de-duped from the per-player rows.
+ * Single source of truth for both the /active-sessions list and the headline count, so the
+ * two can't drift. Bounded only by the row-scan limit — the *display* cap is applied by the
+ * caller, after sorting, so no caller can accidentally truncate by row again.
+ */
+export function getDedupedActiveSessions(raidKey?: string): ActiveSessionDbRow[] {
+    const rows = getActiveSessions(raidKey, undefined, true);
+    return dedupeActiveSessions(rows, (row) => ({
+        activityHash: row.activityHash,
+        memberIds: parseMemberIds(row.partyMembersJson),
+        checkedAt: row.checkedAt,
+        startedAt: row.startedAt,
+    }));
+}
+
+/**
+ * Display ordering for the active-sessions list: fireteams with more than one visible member
+ * first, then newest first. A single-member session is usually a transitory-visibility artifact
+ * (we couldn't read the fireteam) rather than a genuine solo run, so it ranks below real
+ * fireteams — and is the first thing dropped if the display cap bites.
+ */
+export function compareSessionsForDisplay(
+    a: { memberCount: number; startedAt: string },
+    b: { memberCount: number; startedAt: string }
+): number {
+    const aSolo = a.memberCount > 1 ? 0 : 1;
+    const bSolo = b.memberCount > 1 ? 0 : 1;
+    if (aSolo !== bSolo) return aSolo - bSolo;
+    return (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0);
+}
+
+/**
+ * Count of distinct active raid fireteams, used by the StatsBar and the OG share cards.
+ * This is the TRUE total and may legitimately exceed the number of cards the page renders
+ * (which is capped) — it answers "how busy is Destiny right now". See docs/adr/0002.
+ * Returns 0 on a database-maintenance error rather than throwing.
  */
 export function countActiveRaidSessions(): number {
     try {
-        const rows = getActiveSessions(undefined, 200, true);
-        const deduped = dedupeActiveSessions(rows, (row) => ({
-            activityHash: row.activityHash,
-            memberIds: parseMemberIds(row.partyMembersJson),
-            checkedAt: row.checkedAt,
-            startedAt: row.startedAt,
-        }));
-        return deduped.length;
+        return getDedupedActiveSessions().length;
     } catch {
         return 0;
     }
