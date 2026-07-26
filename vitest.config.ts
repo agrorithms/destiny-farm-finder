@@ -15,9 +15,11 @@ export default defineConfig({
         // under tests/ where the helpers are.
         include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
 
-        // Fails any test that reaches for the network without stubbing fetch. A
-        // suite that quietly hits stats.bungie.net burns API quota and goes flaky.
-        setupFiles: ['tests/setup/no-network.ts'],
+        // Order matters. test-db-path must run before anything imports the db
+        // module, because DB_PATH is resolved at import time — see the file's
+        // comment. no-network fails any test that reaches the real internet
+        // without stubbing fetch, which would burn API quota and go flaky.
+        setupFiles: ['tests/setup/test-db-path.ts', 'tests/setup/no-network.ts'],
 
         coverage: {
             provider: 'v8',
