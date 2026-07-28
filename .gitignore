@@ -71,3 +71,6 @@ localhost.key
 .env.sentry-build-plugin
 
 certificates
+
+#handoff docs
+docs/handoffs/
