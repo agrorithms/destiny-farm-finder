@@ -1,0 +1,40 @@
+name: test
+
+# Fast, hermetic checks only. The maintenance-cycle harness
+# (`npm run e2e:maintenance`) is deliberately excluded: it spawns real
+# crawler and scanner processes against a mock Bungie server and runs for
+# minutes, which is not what a per-push gate is for.
+#
+# NOTE ON ARCHITECTURE: this runs on x86_64, while production is ARM64
+# (Oracle A1 Flex). better-sqlite3 is a native module, so CI compiles and
+# tests a different binary than production runs. Native-level differences
+# in better-sqlite3 will not be caught here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `ci`, not `install`: the lockfile is the source of truth for
+      # deployments, and a CI run that silently resolved different versions
+      # would be testing something production never sees.
+      - run: npm ci
+
+      - run: npm run lint
+
+      # Nothing else typechecks the repo — `npm test` transpiles without
+      # checking, and a full `next build` is too slow for this gate.
+      - run: npx tsc --noEmit
+
+      - run: npm test
