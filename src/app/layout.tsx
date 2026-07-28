@@ -8,7 +8,6 @@ import PlayerSearch from '@/components/PlayerSearch';
 import StatsBar from '@/components/StatsBar';
 import ThemeToggle from '@/components/ThemeToggle';
 import BungieMaintenanceAlert from '@/components/BungieMaintenanceAlert';
-import FooterStatus from '@/components/FooterStatus';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://destinyfarmfinder.qzz.io';
 
@@ -135,8 +134,6 @@ export default function RootLayout({
               >
                 <Image src="https://discord.com/assets/favicon.ico" alt="" width={18} height={18} />
               </a>
-              <span className="ui-text-subtle" aria-hidden="true">•</span>
-              <FooterStatus />
             </div>
           </div>
         </footer>
