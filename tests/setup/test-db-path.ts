@@ -27,6 +27,13 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dff-test-'));
 
 process.env.RAID_TRACKER_DB_PATH = path.join(dir, 'test.db');
 
+// The one database this process is allowed to open. getDb() compares DB_PATH
+// against this and refuses anything else while VITEST is set, so if the ordering
+// described above is ever broken the suite fails loudly instead of quietly
+// operating on the real, live database. Set here rather than in a helper because
+// this file is the only thing that knows which directory was minted.
+process.env.DFF_TEST_DB_SENTINEL = path.join(dir, 'test.db');
+
 // Keep the suite off any real key even if a test reaches code that reads one.
 process.env.BUNGIE_API_KEY = 'test-key-not-a-real-credential';
 

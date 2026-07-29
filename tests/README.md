@@ -95,6 +95,11 @@ schema. You don't have to set it up — `tests/setup/test-db-path.ts` handles it
 run. A real file rather than `:memory:` for a specific reason:
 [ADR 0003](../docs/adr/0003-tests-run-against-a-real-sqlite-file.md).
 
+If you ever see `Refusing to open … under Vitest`, that setup file didn't run before something
+imported `src/lib/db` — check the `setupFiles` order in `vitest.config.ts` rather than working
+around the error. The guard exists because the alternative is the suite quietly using the real
+2.5 GB database.
+
 `seedRun` goes through `insertFullPGCR`, the same chokepoint all four production ingestion sources
 use — so seeded rows are rows production could actually create. Don't reach for raw `INSERT`s.
 
