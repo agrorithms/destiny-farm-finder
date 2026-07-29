@@ -95,6 +95,15 @@ schema. You don't have to set it up — `tests/setup/test-db-path.ts` handles it
 run. A real file rather than `:memory:` for a specific reason:
 [ADR 0003](../docs/adr/0003-tests-run-against-a-real-sqlite-file.md).
 
+**`test-db-path.ts` must stay first in `setupFiles`, and `getDb()` enforces it.** `DB_PATH` in
+`src/lib/db/index.ts` is a module-level const resolved at *import* time, so if anything imports the
+db module before `test-db-path.ts` has pointed `DB_PATH` at the throwaway file, the whole suite
+binds to the real database — and `resetTestDb()`'s `DELETE FROM`s land on your live dev data.
+Don't reorder `setupFiles` in `vitest.config.ts` and don't convert `test-db-path.ts` into a helper
+that some test imports. `getDb()` refuses to open anything but the throwaway DB while `VITEST` is
+set, so a break fails loudly with `Refusing to open …` rather than silently destroying data.
+`openMaintenanceDb()` is deliberately left unguarded — see ADR 0003 for why.
+
 `seedRun` goes through `insertFullPGCR`, the same chokepoint all four production ingestion sources
 use — so seeded rows are rows production could actually create. Don't reach for raw `INSERT`s.
 

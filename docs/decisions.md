@@ -194,6 +194,8 @@ in `src/lib/bungie/manifest.ts:16`; `setup-manifest` only *writes* the cache, fo
 before hand-editing the literal. Convenient for tests — raid detection is fully hermetic — but the
 documentation implies a runtime dependency that does not exist.
 
+7/29/26 This has been addressed
+
 ### The `ended_at` cutover was already complete
 
 The brief described it as in-flight and asked for a parity safety net across ~10 SQL sites. It
