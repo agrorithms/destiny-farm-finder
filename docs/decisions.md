@@ -194,9 +194,10 @@ in `src/lib/bungie/manifest.ts:16`; `setup-manifest` only *writes* the cache, fo
 before hand-editing the literal. Convenient for tests — raid detection is fully hermetic — but the
 documentation implies a runtime dependency that does not exist.
 
-Corrected in CLAUDE.md on 2026-07-29: the conventions bullet, the code-layout line, and the
-"Raid Detection" section now all say the table is static source and that `setup-manifest` alone
-changes nothing about detection.
+Corrected in CLAUDE.md on 2026-07-29. The same-day CLAUDE.md trim then removed the redundant
+"Raid Detection" section and the code-layout line entirely, so the single conventions bullet is
+now the only statement of it: the table is static source, and `setup-manifest` alone changes
+nothing about detection.
 
 ### The `ended_at` cutover was already complete
 

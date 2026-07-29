@@ -74,3 +74,9 @@ certificates
 
 #handoff docs
 docs/handoffs/
+
+#tickets
+docs/tickets/
+
+# claude plans and skills
+.claude/
