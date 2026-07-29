@@ -104,6 +104,9 @@ that some test imports. `getDb()` refuses to open anything but the throwaway DB 
 set, so a break fails loudly with `Refusing to open …` rather than silently destroying data.
 `openMaintenanceDb()` is deliberately left unguarded — see ADR 0003 for why.
 
+So if you ever see `Refusing to open … under Vitest`, that setup file didn't run before something
+imported `src/lib/db` — check the `setupFiles` order rather than working around the error.
+
 `seedRun` goes through `insertFullPGCR`, the same chokepoint all four production ingestion sources
 use — so seeded rows are rows production could actually create. Don't reach for raw `INSERT`s.
 

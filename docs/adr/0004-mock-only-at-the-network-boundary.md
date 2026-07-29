@@ -33,6 +33,12 @@ quietly burning Bungie API quota and going flaky against live data.
 
 - Test databases are real; see ADR 0003 for why they are files rather than
   `:memory:`.
+- A *configuration guard* in `src/` is not a mock, and this constraint does not
+  forbid one. `getDb()` refuses to open anything but the throwaway database when
+  `VITEST` is set (ADR 0003) — it substitutes no behaviour, so it cannot make a
+  failing test appear to pass; its only effect is aborting a run that is already
+  misconfigured. It is the sole place `src/` knows tests exist, and it is
+  deliberate rather than a leak to be tidied away.
 - Tests that need a specific Bungie response stub `fetch` explicitly. The guard
   records itself as the original, so the block is restored automatically for the
   next test with no per-file cleanup.

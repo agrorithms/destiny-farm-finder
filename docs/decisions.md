@@ -186,7 +186,7 @@ invocation, not just on open. Not a correctness bug — but it is why test isola
 `DATA_DIR` and not merely the database file, since a suite running during a maintenance vacuum
 would otherwise fail every test with `DatabaseMaintenanceError`.
 
-### CLAUDE.md's raid-detection description is inaccurate
+### CLAUDE.md's raid-detection description is inaccurate — fixed 2026-07-29
 
 CLAUDE.md states raid detection "matches `activityHash` against the manifest cache
 (`data/manifest-cache.json`)". Nothing reads that file. `RAID_DEFINITIONS` is a hardcoded literal
@@ -194,7 +194,10 @@ in `src/lib/bungie/manifest.ts:16`; `setup-manifest` only *writes* the cache, fo
 before hand-editing the literal. Convenient for tests — raid detection is fully hermetic — but the
 documentation implies a runtime dependency that does not exist.
 
-7/29/26 This has been addressed
+Corrected in CLAUDE.md on 2026-07-29. The same-day CLAUDE.md trim then removed the redundant
+"Raid Detection" section and the code-layout line entirely, so the single conventions bullet is
+now the only statement of it: the table is static source, and `setup-manifest` alone changes
+nothing about detection.
 
 ### The `ended_at` cutover was already complete
 
@@ -239,3 +242,47 @@ which is right, since the run itself is real.
 Note also that `types.ts` declares `UserInfoCard.displayName` and
 `DestinyPostGameCarnageReportData.startingPhaseIndex` as required, and both are optional in
 practice. The type is more confident than the API.
+
+## 2026-07-29 — Guarding the test suite against opening the real database
+
+`DB_PATH` (`src/lib/db/index.ts:7`) is a module-level const resolved at import time, so the test
+suite lands on its throwaway database only because `tests/setup/test-db-path.ts` runs as the first
+`setupFile`. Break that ordering and the failure is *silent*: `DB_PATH` becomes the real path and
+`resetTestDb()`'s five `DELETE FROM`s, plus every seeded write, hit live data without erroring.
+
+The tell was an asymmetry. The suite guards the *network* with a real thrower
+(`tests/setup/no-network.ts`) and guarded the *database* with nothing but import ordering and a
+comment.
+
+**Decision.** `assertDbPathAllowed()` in `getDb()`: while `VITEST` is set, `DFF_TEST_DB_SENTINEL`
+(published by the setup file) must exist and match `DB_PATH` exactly, or the call throws. Recorded
+against ADR 0003, whose mechanism this hardens, with a line in ADR 0004 stating that a configuration
+guard is not a mock — deliberately, so nobody deletes the `VITEST` branch as a smell.
+
+### Scope, and what was rejected
+
+- **`getDb()` only.** `openMaintenanceDb()` opens a second raw connection and its callers `VACUUM`
+  through it, but nothing in the suite reaches it; left unguarded with a comment saying so.
+- **Not the eager-import fix.** Having the setup file `await import('@/lib/db')` to pin `DB_PATH`
+  removes the hazard rather than detecting it and needs no `src/` change — but it only works as a
+  *dynamic* import, since a static one hoists above the env assignment. A routine tidy-up reverts it
+  silently, which is exactly what made the original hazard dangerous.
+- **Not sentinel-only keying.** Reads as a general invariant and keeps `src/` innocent of tests, but
+  goes inert when the sentinel is unset — i.e. when the setup file never ran, the case where
+  everything else has already failed.
+- **Not a guard in `tests/helpers/db.ts`.** `tests/helpers/seed.ts` and
+  `tests/db/ended-at-derivation.test.ts` import `getDb` directly, so a helper-level check would have
+  covered the deletes and left the writes open: a partial guard that reads as complete.
+- **Not a new ADR.** Cheap to reverse (six deletable lines), so two of the three ADR criteria fail.
+
+### Blast radius, for the record
+
+Smaller than it first looks, and it sizes the whole decision. Tests run on dev, where `DB_PATH`
+defaults to the 2.5 GB `data/raid-tracker.db` with a live crawler attached. Production is a separate
+host that never runs `npm test`; CI has no database at all. Worst case was "wipe the dev DB,
+re-crawl", cushioned by the dated snapshots in `data/`. Cheap insurance against an annoying loss,
+not disaster prevention.
+
+Verified by running `getDb()` under `tsx` with `VITEST=true` across four cases — sentinel missing,
+sentinel mismatched, sentinel matching, and `VITEST` unset — each against a scratch path so a broken
+guard could not touch the real database. First two throw, last two proceed.

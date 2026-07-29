@@ -33,6 +33,22 @@ The path is set in a Vitest `setupFile` rather than inside a helper, because
 the test file's own imports run is what lets test files use ordinary static
 imports instead of `await import()` throughout.
 
+That ordering is load-bearing, and breaking it fails *silently*: `DB_PATH` resolves
+to the real data directory, and the suite's `DELETE FROM` and `VACUUM` paths operate
+on live data without erroring. So `getDb()` refuses to open anything but the
+throwaway path while `VITEST` is set — `tests/setup/test-db-path.ts` publishes the
+directory it minted as `DFF_TEST_DB_SENTINEL`, and `assertDbPathAllowed()` in
+`src/lib/db/index.ts` requires an exact match. Keyed on `VITEST` rather than on the
+sentinel alone so that a suite where the setup file never ran at all — the case where
+every other protection has already failed — still refuses rather than going quiet.
+
+The tempting alternative was to remove the hazard instead of detecting it: have the
+setup file `await import('@/lib/db')` immediately after setting the env var, pinning
+`DB_PATH` before anything else can. Rejected because its correctness depends on the
+import being *dynamic* — a static `import` hoists above the assignment and does
+nothing — so a routine tidy-up reverts it, silently, which is the property that made
+the original hazard dangerous in the first place.
+
 ## Consequences
 
 - Test databases cost a `mkdtemp` plus `initializeSchema()` per test file —
@@ -40,6 +56,14 @@ imports instead of `await import()` throughout.
   overall, well below the value of matching production semantics.
 - Temp directories leak into the system temp dir if a test process is killed
   before `afterAll` runs. Harmless, and the OS clears them.
+- A misconfigured suite fails on the first `getDb()` call with `Refusing to open …`
+  rather than quietly using the real database. `tests/setup/test-db-path.test.ts`
+  pins the invariant, including that `VITEST` is actually set — an inert guard is
+  the only failure mode here that hides, since one that wrongly refuses breaks
+  every test file at once.
+- `openMaintenanceDb()` is deliberately *not* guarded: nothing in the suite reaches
+  it today. Its callers (`src/lib/bungie/maintenance.ts`) `VACUUM` through it, so a
+  test that exercises them should add the check.
 - The schema under test is the production schema by construction: `getDb()` runs
   `initializeSchema()`, including the `ended_at` migration guard and the Phase 3
   indexes. There is no second schema definition that can drift.
