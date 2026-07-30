@@ -79,4 +79,5 @@ docs/handoffs/
 docs/tickets/
 
 # claude plans and skills
-.claude/plans
+.claude/plans/
+.claude/settings.local.json
