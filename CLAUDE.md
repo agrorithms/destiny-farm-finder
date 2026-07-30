@@ -6,6 +6,30 @@ Real-time Destiny 2 raid completion tracker. SQLite database fed by background c
 
 - NEVER overwrite files in ~/.claude/plans/ 
 
+## Workflow
+
+**Discussion is the default; implementation is opt-in.**
+
+When I ask a question — anything phrased as "why", "how does", "explain", "what are the options", "is this a concern", "should we", "validate this note" — answer it and stop. Do not write files, create a plan, edit code, or run mutating commands. Read-only investigation to ground the answer is expected and welcome.
+
+Implementation starts only when I say so explicitly: "implement it", "go ahead", "execute the plan". Absent those words, assume we are still talking. If you think you have enough to start building, say so and wait rather than starting.
+
+**Before proposing a root cause, gather evidence first.**
+
+State your top 2–3 hypotheses and, for each, the specific command, query, log, or header that would confirm or kill it. Run those checks and show the raw output before recommending a fix. If I contradict a hypothesis with data, drop it — do not refine it into a new version of the same theory. My most recent change is not a privileged suspect: rule out the alternatives before blaming it.
+
+**Checkpoint long builds.**
+
+For anything touching more than ~8 files, write a progress file listing each file with a checkbox, update it as you go, and make a WIP commit per logical chunk. I review diffs before they land, and one 20-file blob is not reviewable. Do not commit unless the change is on a branch.
+
+**Verification.**
+
+The `verify` skill (`.claude/skills/verify/SKILL.md`) is the build/launch/drive recipe — read it before verifying anything by hand. After a multi-file change run `npm run lint`, then `npm run build`, then `npm test`, and report the real output. Never report a change as working without it. Note that no headless browser is installed: if a change affects client-side request sequencing or rendering, say plainly that browser behavior is unverified rather than implying the server-side checks covered it.
+
+**Environment.**
+
+Port and build-lock hygiene is enforced by hooks in `.claude/hooks/` — a dev server or build already running will be reported to you rather than silently collided with. When you do stop a dev server, kill the actual `next dev`/`next-server` PID, not just the `npm` wrapper. Never kill a server you did not start without asking. `lsof` cannot see network sockets under WSL2 — use `ss` or `fuser` for port checks.
+
 ## Commands
 
 `package.json` has the full list. The non-obvious ones:
