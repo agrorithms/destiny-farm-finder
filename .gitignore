@@ -71,3 +71,12 @@ localhost.key
 .env.sentry-build-plugin
 
 certificates
+
+#handoff docs
+docs/handoffs/
+
+#tickets
+docs/tickets/
+
+# claude plans and skills
+.claude/

@@ -1184,7 +1184,21 @@ export function upsertActiveSession(session: {
     );
 }
 
-export function getActiveSessions(raidKey?: string, limit: number = 50, onlyRaidMode: boolean = true): ActiveSessionDbRow[] {
+// How many raw per-player rows an active-session read may scan. This is NOT the display limit:
+// `active_sessions` is keyed by membership_id, so one fireteam yields up to 6 rows, and the
+// user-facing cap is denominated in *fireteams* after dedupe (see active-session/dedupe.ts).
+// Sized at ~2x the ceiling the crawler can produce: at CRAWLER_SESSION_POLLING_LIMIT rows per
+// cycle over the 900s freshness window, at most ~1500 rows can be fresh at once.
+export const ACTIVE_SESSION_ROW_SCAN_LIMIT = Math.max(
+    1,
+    parseInt(process.env.ACTIVE_SESSION_ROW_SCAN_LIMIT || '3000', 10)
+);
+
+export function getActiveSessions(
+    raidKey?: string,
+    rowScanLimit: number = ACTIVE_SESSION_ROW_SCAN_LIMIT,
+    onlyRaidMode: boolean = true
+): ActiveSessionDbRow[] {
     const db = getDb();
 
     // Only show sessions checked within the last 15 minutes
@@ -1218,8 +1232,13 @@ export function getActiveSessions(raidKey?: string, limit: number = 50, onlyRaid
         queryParams.push(raidKey);
     }
 
-    query += ` ORDER BY started_at DESC LIMIT ?`;
-    queryParams.push(limit);
+    // Ordered by checked_at (indexed by idx_active_sessions_checked_at), NOT started_at. Callers
+    // dedupe into fireteams and apply their own display sort, so this ordering only decides which
+    // rows survive if `rowScanLimit` is ever hit — and then we want to shed the *stalest* rows,
+    // which are closest to ageing out anyway. Ordering by started_at here is what caused
+    // long-running raids to be silently dropped; see docs/adr/0001.
+    query += ` ORDER BY checked_at DESC LIMIT ?`;
+    queryParams.push(rowScanLimit);
 
     return db.prepare(query).all(...queryParams) as ActiveSessionDbRow[];
 }

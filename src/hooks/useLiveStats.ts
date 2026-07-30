@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from 'react';
 
 // Single shared poller for /api/live-stats: however many components subscribe
-// (StatsBar, FooterStatus, BungieMaintenanceAlert), the tab makes one request per
+// (StatsBar, BungieMaintenanceAlert), the tab makes one request per
 // interval. Polling pauses entirely while the tab is hidden and resumes with an
 // immediate fetch when it becomes visible again.
 

@@ -55,7 +55,7 @@ export default function ActiveSessionsPage() {
     const fetchSessions = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/active-sessions?limit=200');
+            const response = await fetch('/api/active-sessions?limit=600');
             if (!response.ok) throw new Error(`API error: ${response.status}`);
             const data = await response.json();
             setSessions(data.sessions || []);
