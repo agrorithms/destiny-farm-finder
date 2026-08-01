@@ -286,3 +286,82 @@ not disaster prevention.
 Verified by running `getDb()` under `tsx` with `VITEST=true` across four cases — sentinel missing,
 sentinel mismatched, sentinel matching, and `VITEST` unset — each against a scratch path so a broken
 guard could not touch the real database. First two throw, last two proceed.
+
+---
+
+## 2026-07-31 — Enforcement hooks for environment debris (`.claude/hooks/`)
+
+Not an ADR. Checked against ADRs 0001–0005 first, per standing preference: this contradicts and
+hardens none of them. All five are application/data-behaviour decisions — display caps, session
+counts, test isolation, network mocking, loop resilience — and none touches tooling. This file's
+own header covers decisions that "live partly outside the codebase … where a code comment can't
+reach them", which describes `.claude/` exactly.
+
+### Why hooks rather than more documentation
+
+A usage-insights report over 24 sessions produced one finding worth acting on: **process problems
+were being fixed with documentation instead of automation.** The repo already had a `verify` skill,
+five ADRs, this file, and an unusually thorough CLAUDE.md — and zero hooks.
+
+That matters because the two friction categories are of different kinds:
+
+- **Documentation is advisory.** It works only if the model reads and honours it. Fine for domain
+  conventions (`player identity is Name#Code`) where the model has no competing instinct.
+- **Hooks are enforcement.** They run whether or not the model remembers, and can refuse a tool
+  call outright.
+
+The environment-debris friction is the second kind, and had recurred for five weeks *despite being
+well understood* — because its failures surface after the session ends, when no instruction is in
+context. An orphaned `next dev` holding port 3000 blocks the user's own `npm run dev` days later.
+Concurrent `next build` runs collide on the build lock, which requires knowing about a process
+started in a different tool call. `npm uninstall sqlite3` when only the `package.json` entry was
+wanted needs a *stop*, not a reminder.
+
+The workflow friction — Claude treating discussion as an implementation cue — is the *first* kind:
+a standing preference, not an invisible failure. That became CLAUDE.md §Workflow, not a hook.
+
+### No hook may kill anything
+
+The insights report recommended a SessionStart hook running `lsof -ti:3000 | xargs kill -9`.
+Rejected: **the process holding port 3000 is as likely to be the user's deliberately-started server
+as it is debris.** Every hook detects and reports. The entire snapshot/diff mechanism exists for no
+other purpose than letting the report distinguish "yours" from "this session's".
+
+This is the constraint to check first against any future change here.
+
+### False positives cost more than bypasses
+
+The matching helper `invokes()` is a best-effort backstop against a *forgetful* Claude, not an
+evasion-proof gate — the model it guards against writes `npm run dev`, not an obfuscated form. That
+ordering decided four separate choices: heredoc bodies and quoted spans are stripped before
+matching; `sh -c` is left as a documented, test-pinned bypass; the Stop hook exits silently rather
+than report without a baseline; single-file `rm -f` is not gated. A bypass means the guard is
+silent. A false positive blocks real work — and a false *orphan report* hands the user a `kill`
+aimed at their own server, which is the one outcome the paragraph above forbids.
+
+### Environment facts, established by testing
+
+The reusable part. All three were found by running against real processes, and each had already
+produced a wrong design before it was caught:
+
+- **`lsof` cannot see network sockets under WSL2.** `lsof -ti:3000` exits 1 against a plainly
+  listening server. The insights report's suggested hook would have silently no-opped forever.
+  `ss` is the primary, `fuser` the fallback.
+- **`pgrep -f "next dev"` self-matches** the hook's own shell wrapper — the whole command string
+  lands in its cmdline — so it false-positives on every invocation. Port-based detection instead,
+  and `[n]ode_modules/.bin/next build` with the bracket trick where pgrep is unavoidable.
+- **A real build's decisive cmdline is `node <repo>/node_modules/.bin/next build`**, not
+  `npm run build`.
+
+### Rejected: narrowing the SessionStart matcher
+
+Worth recording because it looks correct and is not. A review found that the unmatched SessionStart
+hook re-baselines and clears the warned set on `/clear`, `/compact` and resume, and proposed
+restricting the matcher to `startup`. That breaks the mechanism: `clear` and `resume` are also
+SessionEnd *reasons*, so `/clear` deletes the state and then re-enters SessionStart. A hook ignoring
+`clear` leaves the Stop hook with no baseline at all, and every port holder is reported as debris —
+the exact failure the snapshot exists to prevent. The real defect was that the write was
+unconditional. Fixed by writing only when absent; the matcher is unchanged.
+
+Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
+Behavioural suite: `bash .claude/hooks/test-hooks.sh` (50 assertions).

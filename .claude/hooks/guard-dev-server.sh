@@ -13,12 +13,12 @@ CMD="$(hook_field '.tool_input.command')"
 
 # Only interested in commands that actually START a dev server, not ones that
 # merely mention it (echo, grep, a heredoc writing docs).
-invokes "$CMD" 'npm run dev|yarn dev|pnpm dev|next dev' || exit 0
+invokes "$CMD" 'npm run dev|next dev' || exit 0
 
 PIDS="$(dev_port_pids)"
 [ -z "$PIDS" ] && exit 0
 
-OWNERS="$(ps -o pid=,args= -p ${PIDS} 2>/dev/null | cut -c1-100 | paste -sd'; ' -)"
+OWNERS="$(describe_pids "$PIDS")"
 deny "Port ${DEV_PORT} is already in use — do not start a second dev server.
 Holding process(es): ${OWNERS}
 This may be the user's own server. Do NOT kill it unsolicited. Either reuse it (curl http://localhost:${DEV_PORT}) or ask the user first.

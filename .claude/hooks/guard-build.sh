@@ -10,7 +10,7 @@ CMD="$(hook_field '.tool_input.command')"
 
 # `npm run build` chains next-build; match both it and a direct next build.
 # invokes() rather than a substring grep — see the note in lib.sh.
-invokes "$CMD" 'npm run build|npm run next-build|yarn build|pnpm build|next build' || exit 0
+invokes "$CMD" 'npm run build|npm run next-build|next build' || exit 0
 
 PIDS="$(next_build_pids)"
 [ -z "$PIDS" ] && exit 0

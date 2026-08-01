@@ -8,6 +8,24 @@
 # started mid-session would nag at the end of every subsequent turn.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+init_session_state
+
+# No baseline => fail open, silently.
+#
+# Without this check, a missing or unreadable snapshot is indistinguishable from
+# "the port was empty at session start", so every holder gets reported as debris
+# — complete with a ready-to-run `kill`, aimed at what may well be the user's
+# own server. That is the one outcome the whole no-kill design exists to
+# prevent. A missed report only costs a stale server the user would notice
+# anyway, so the asymmetry decides it.
+[ -f "$SNAPSHOT_FILE" ] || exit 0
+
+# Keep this session's state young. The 7-day sweep otherwise ages the two files
+# independently — the snapshot is written once and never touched again, while
+# WARNED_FILE is appended to on any turn that finds an orphan — so a session
+# alive past a week would lose its baseline and keep its warned set. Stop runs
+# every turn, so touching here makes the pair age as a unit by construction.
+touch "$SNAPSHOT_FILE" "$WARNED_FILE" 2>/dev/null
 
 NOW="$(dev_port_pids)"
 [ -z "$NOW" ] && exit 0
@@ -29,6 +47,6 @@ NEW="$(echo "$NEW" | sed 's/^ *//; s/ *$//')"
 # Record before reporting, so a failure downstream can't cause a repeat nag.
 for pid in $NEW; do echo "$pid" >> "$WARNED_FILE"; done
 
-OWNERS="$(ps -o pid=,args= -p ${NEW} 2>/dev/null | cut -c1-100 | paste -sd'; ' -)"
+OWNERS="$(describe_pids "$NEW")"
 jq -nc --arg msg "Dev server still running on port ${DEV_PORT}, started during this session: ${OWNERS}  ->  kill ${NEW}  (reported once; will not repeat for these PIDs)" \
   '{systemMessage:$msg}'

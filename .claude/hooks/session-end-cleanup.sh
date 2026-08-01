@@ -7,6 +7,7 @@
 # guarantee against pileup, not this.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+init_session_state
 
 rm -f "$SNAPSHOT_FILE" "$WARNED_FILE" 2>/dev/null
 exit 0
