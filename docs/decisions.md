@@ -364,4 +364,64 @@ the exact failure the snapshot exists to prevent. The real defect was that the w
 unconditional. Fixed by writing only when absent; the matcher is unchanged.
 
 Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
-Behavioural suite: `bash .claude/hooks/test-hooks.sh` (50 assertions).
+
+## 2026-08-03 — Orphan detection by process age; the snapshot mechanism is gone
+
+Supersedes the two sections above it on baselines. The write-only-when-absent fix did not hold:
+`/clear` and `resume` are SessionEnd *reasons*, so SessionEnd deleted the state and SessionStart
+then found nothing to preserve. Reproduced — `/clear` took snapshot `[12345] -> []`, warned
+`[99999] -> []`. `fork` was never covered at all.
+
+**The baseline file was the wrong primitive.** A port holder younger than the `claude` process is
+one this session started; that needs no state, so there is nothing to establish, nothing to lose on
+re-entry, and nothing to clean up. The SessionStart and SessionEnd hooks are deleted and the hook
+surface drops from six to four. Three review findings dissolved rather than being patched.
+
+### The fact that nearly shipped a dead check
+
+**A hook's `$PPID` is not the `claude` process** — it is a per-invocation `/bin/sh -c` wrapper whose
+own `etimes` is always 0. The obvious one-liner (`ps -o etimes= -p $PPID`) would have read 0,
+classified every port holder as older than the session, reported nothing ever, and passed every
+test. Caught by instrumenting a live hook rather than reasoning about it:
+
+```
+10987  1464  0     /bin/sh -c ".../guard-build.sh"
+ 1464    10  2778  claude
+```
+
+Session age must be found by walking up to the nearest `comm=claude`, not at a fixed depth. Note a
+Bash *tool call*'s `$PPID` **is** `claude` directly — only hooks get the extra layer, so measuring
+one and generalising to the other is precisely how this bug is reintroduced.
+
+### False positives cost more than bypasses — except where they don't
+
+The 2026-07-31 rule was derived from the dev-server and build guards, which emit `deny`, and then
+applied to the destructive guard, which emits `ask`. There a false positive costs one keystroke
+while a miss costs `node_modules`, `data/` or `.env`. The destructive guard now matches with a
+stricter variant that sees inside `sh -c "..."`; the two `deny` guards keep the lenient one, and
+not merely by preference — they blank quotes first, so the wrapper would have nothing to match.
+
+### `git clean` was the biggest hole, and nothing was watching it
+
+`rm -rf` was gated; `git clean -fdx` was not. Here it removes `data/` (9.0G), `.env`,
+`.claude/plans/`, `certificates/` and `docs/handoffs/` — none of it recoverable from git. Also
+newly gated: `git reset --hard`, `git checkout --`, `git restore`, and **any `rm` naming a
+gitignored path**, which is what finally covers `rm data/raid-tracker.db` — a file, so no recursive
+flag was ever involved.
+
+That last rule uses `git check-ignore` rather than a hardcoded list of precious paths. Of 20
+gitignored entries only ~5 are regenerable; a hand-drafted list was already missing five real ones
+when written. Consequence accepted: CLAUDE.md's restore step `rm data/raid-tracker.db-wal` now
+prompts.
+
+### Two more things testing settled
+
+- **The build guard's detection path had never been executed** — every assertion checked only
+  "allow when nothing is running". Confirmed against a real build: `next_build_pids()` matches the
+  `node .../node_modules/.bin/next build` process only, not the two `sh -c` wrappers, the npm
+  wrapper, or the webpack/postcss workers.
+- **The test suite was deleting the live hook state directory**, silently disabling the orphan check
+  of any running session. The state path is now overridable and the suite points at a throwaway.
+
+Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
+Behavioural suite: `bash .claude/hooks/test-hooks.sh` (87 assertions).
