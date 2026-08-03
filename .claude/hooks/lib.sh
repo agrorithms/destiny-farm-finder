@@ -32,7 +32,7 @@ HOOK_STATE_DIR="${HOOK_STATE_DIR:-/tmp/claude-hooks-$(id -u)}"
 # to compute a filename nothing reads.
 #
 # Only ONE file remains. The session-start baseline snapshot is gone: orphan
-# detection now compares process ages (see session_age / classify_holders), so
+# detection now compares process ages (see session_age / holders_younger_than), so
 # there is nothing to record when a session begins.
 init_session_state() {
   mkdir -p "$HOOK_STATE_DIR" 2>/dev/null
@@ -139,7 +139,7 @@ next_build_pids() {
 # is younger than the session and will be reported. The snapshot design had the
 # identical hole — it was not in the baseline either — so this is not a
 # regression. The message is worded accordingly.
-classify_holders() {
+holders_younger_than() {
   local age="$1"; shift
   local pid hage out=""
   [ -z "$age" ] && return 0
@@ -233,6 +233,14 @@ strip_heredocs() {
 # they are kept because removing them opens a gap for no measurable gain.
 HOOK_WRAPPERS='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|then|do|else|elif|nohup|exec|command|stdbuf|env|timeout[[:space:]]+[0-9]+[smhd]?)'
 
+# Commands gated by R7 (guard-destructive.sh). Lives here, not in the hook, so
+# the tests assert against the same pattern production uses — they had already
+# drifted to an older, narrower copy once.
+#
+# `git clean` is deliberately NOT here: it needs the per-clause dry-run
+# exemption in invokes_real_git_clean().
+HOOK_DESTRUCTIVE='npm uninstall|npm rm|npm remove|npm prune|git reset --hard|git checkout --|git restore|rm -[a-zA-Z]*[rR][a-zA-Z]*'
+
 # True if $1 actually INVOKES one of the alternatives in ERE $2, rather than
 # merely mentioning it. A plain substring grep denies `echo "npm run dev"`,
 # `grep -r "npm run dev" .`, or editing this very file — verified the hard way,
@@ -310,6 +318,9 @@ rm_touches_ignored() {
   invokes_strict "$1" 'rm' || return 1
   repo="${CLAUDE_PROJECT_DIR:-$PWD}"
 
+  # `local -` scopes shell options to this function, so the caller's globbing
+  # setting is restored on return however we leave.
+  local -
   # Globbing off: `rm -rf /tmp/foo-*` must not expand against the real
   # filesystem while we are only reading tokens.
   set -f
@@ -319,12 +330,33 @@ rm_touches_ignored() {
     case "$tok" in
       -*|rm|sh|bash|zsh) continue ;;
     esac
-    if git -C "$repo" check-ignore -q -- "$tok" 2>/dev/null; then
-      set +f
-      return 0
-    fi
+    git -C "$repo" check-ignore -q -- "$tok" 2>/dev/null && return 0
   done
-  set +f
+  return 1
+}
+
+# True if $1 contains a `git clean` that is NOT a dry run.
+#
+# Scoped per CLAUSE, which the first version was not. It grepped the whole
+# command for any `-`-flag containing an `n`, so an unrelated `head -n 20`,
+# `sort -n` or `grep -n` anywhere in the command exempted a real destructive
+# clean — and because the caller then exited, it suppressed the rm rules for
+# that call too. Both review axes caught it independently:
+#
+#   git clean -fdx                     -> ask
+#   git clean -fdx && head -n 20 file  -> ALLOWED    (wrong)
+#   grep -n foo x && git clean -fdx    -> ALLOWED    (wrong)
+#
+# A clean is exempt only when the clause that invokes it carries the dry-run
+# flag itself. Anything else asks.
+invokes_real_git_clean() {
+  local clause
+  while IFS= read -r clause; do
+    invokes_strict "$clause" 'git clean' || continue
+    # -n, -nd, --dry-run: this clause only looks, so let it through.
+    grep -qE '(^|[[:space:]])(-[a-zA-Z]*n[a-zA-Z]*|--dry-run)([[:space:]]|$)' <<<"$clause" && continue
+    return 0
+  done < <(tr ';&|' '\n' <<<"$(strip_heredocs "$1")")
   return 1
 }
 

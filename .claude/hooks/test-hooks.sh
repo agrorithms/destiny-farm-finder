@@ -11,7 +11,14 @@ H=.claude/hooks
 # session. Exported before lib.sh is sourced so the hooks under test inherit it.
 export HOOK_STATE_DIR="/tmp/claude-hooks-test-$$"
 D="$HOOK_STATE_DIR"
-trap 'rm -rf "$HOOK_STATE_DIR"' EXIT
+# One handler. A second `trap ... EXIT` later in the file would silently
+# replace this one rather than adding to it.
+STARTED_LISTENER=""
+cleanup() {
+  rm -rf "$HOOK_STATE_DIR"
+  [ -n "$STARTED_LISTENER" ] && kill "$STARTED_LISTENER" 2>/dev/null
+}
+trap cleanup EXIT
 
 source "$H/lib.sh" < /dev/null
 
@@ -122,7 +129,9 @@ check "mention: echo npm run build" "nomatch" "$(m 'echo "npm run build"' "$BLDP
 
 echo
 echo "=== C2. destructive matcher (R7) ==="
-DESTPAT='npm uninstall|npm rm|npm remove|npm prune|rm -[a-zA-Z]*[rR][a-zA-Z]*'
+# Sourced from lib.sh, not restated: this copy had already drifted to a
+# narrower pattern than production used.
+DESTPAT="$HOOK_DESTRUCTIVE"
 while IFS= read -r c; do
   check "destructive: $c" "match" "$(m "$c" "$DESTPAT")"
 done <<'DESTRUCTIVE'
@@ -145,7 +154,7 @@ echo "=== C3. invokes_strict(): R7 sees inside quotes, R1/R2 still do not ==="
 # state, a false prompt costs one keystroke. invokes_strict() therefore skips
 # quote-blanking and allows an `sh -c` wrapper.
 ms() { invokes_strict "$1" "$2" && echo match || echo nomatch; }
-DESTPAT='npm uninstall|npm rm|npm remove|npm prune|git clean|git reset --hard|git checkout --|git restore|rm -[a-zA-Z]*[rR][a-zA-Z]*'
+DESTPAT="$HOOK_DESTRUCTIVE"
 check "strict: sh -c \"rm -rf x\"" "match" "$(ms 'sh -c "rm -rf x"' "$DESTPAT")"
 check "strict: bash -c 'npm uninstall y'" "match" "$(ms "bash -c 'npm uninstall y'" "$DESTPAT")"
 # ...while R1/R2 keep the pinned §A3 bypass. Adding the wrapper there would do
@@ -164,8 +173,19 @@ echo "=== C4. destructive git commands (R7, D7) ==="
 # git clean -fdx here removes data/ (9.0G), .env, .claude/plans/, certificates/
 # and docs/handoffs/ — none of them recoverable from git. It was entirely
 # ungated while `rm -rf` was gated.
-check "git clean -fdx" "match" "$(ms 'git clean -fdx' "$DESTPAT")"
-check "git clean in a chain" "match" "$(ms 'cd . && git clean -fd' "$DESTPAT")"
+gc() { invokes_real_git_clean "$1" && echo match || echo nomatch; }
+check "git clean -fdx" "match" "$(gc 'git clean -fdx')"
+check "git clean in a chain" "match" "$(gc 'cd . && git clean -fd')"
+check "git clean -ndx is a dry run" "nomatch" "$(gc 'git clean -ndx')"
+check "git clean --dry-run" "nomatch" "$(gc 'git clean --dry-run -x')"
+# REGRESSION. The dry-run exemption used to grep the WHOLE command for any -n
+# flag, so an unrelated `head -n`/`sort -n`/`grep -n` anywhere exempted a real
+# destructive clean — and because the hook then exited, it suppressed the rm
+# rules for that call too. Both review axes caught this independently.
+check "unrelated -n does not exempt (trailing)" "match" "$(gc 'git clean -fdx && head -n 20 file')"
+check "unrelated -n does not exempt (leading)"  "match" "$(gc 'grep -n foo x && git clean -fdx')"
+check "unrelated -n does not exempt (pipe)"     "match" "$(gc 'git clean -fdx | sort -n')"
+check "a real dry run in a chain is still exempt" "nomatch" "$(gc 'git clean -ndx && echo done')"
 check "git reset --hard" "match" "$(ms 'git reset --hard origin/main' "$DESTPAT")"
 check "git checkout -- ." "match" "$(ms 'git checkout -- .' "$DESTPAT")"
 check "git restore ." "match" "$(ms 'git restore .' "$DESTPAT")"
@@ -178,13 +198,11 @@ echo "=== D. guard end-to-end (port 3000 occupied) ==="
 # Occupy the port ourselves so the suite is self-contained. The guards only ask
 # "is anything listening on 3000", so a bare netcat listener is a faithful
 # stand-in for a real dev server and starts in milliseconds rather than seconds.
-STARTED_LISTENER=""
 if [ -z "$(dev_port_pids)" ]; then
   nc -l 3000 >/dev/null 2>&1 &
   STARTED_LISTENER=$!
   for _ in $(seq 1 20); do [ -n "$(dev_port_pids)" ] && break; sleep 0.2; done
 fi
-trap 'rm -rf "$HOOK_STATE_DIR"; [ -n "$STARTED_LISTENER" ] && kill "$STARTED_LISTENER" 2>/dev/null' EXIT
 echo "  (port 3000 holders: [$(dev_port_pids)])"
 # A silent hook emits NO output at all (that is what "allow" looks like), so
 # assert on raw output: empty = allowed, else parse the decision.
@@ -218,12 +236,18 @@ check "rm outside the repo -> allow" "allow" "$(decision $H/guard-destructive.sh
 check "git clean -ndx (dry run) -> allow" "allow" "$(decision $H/guard-destructive.sh '"git clean -ndx"')"
 check "git clean --dry-run -> allow" "allow" "$(decision $H/guard-destructive.sh '"git clean --dry-run -x"')"
 check "git clean -fdx -> ask" "ask" "$(decision $H/guard-destructive.sh '"git clean -fdx"')"
+# The exemption must never suppress the OTHER rules. It used to exit the whole
+# hook, so an unrelated -n anywhere disabled the rm rules for that call.
+check "unrelated -n does not un-gate the clean" "ask" \
+  "$(decision $H/guard-destructive.sh '"git clean -fdx && head -n 20 file"')"
+check "dry run does not suppress the rm rule" "ask" \
+  "$(decision $H/guard-destructive.sh '"git clean -ndx && rm -rf data"')"
 # The token scan must not glob-expand; -rf already gates this, so the assertion
 # is really "the scan did not crash or hang on an unmatched glob".
 check "rm -rf with a glob -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm -rf /tmp/nonexistent-dir-*"')"
 
 echo
-echo "=== E. classify_holders(): the orphan decision, as a pure function ==="
+echo "=== E. holders_younger_than(): the orphan decision, as a pure function ==="
 # Replaces the whole session-start-snapshot mechanism. A port holder is this
 # session's debris if it is YOUNGER than the session itself.
 #
@@ -234,16 +258,16 @@ echo "=== E. classify_holders(): the orphan decision, as a pure function ==="
 # ancestor" is unreachable from inside a session.
 sleep 300 & YOUNG=$!            # age 0
 OLD=1                           # init, older than any session
-check "young holder is session debris"  "$YOUNG" "$(classify_holders 500 "$YOUNG")"
-check "old holder is pre-existing"      ""       "$(classify_holders 500 "$OLD")"
-check "mixed: only the young one"       "$YOUNG" "$(classify_holders 500 "$OLD $YOUNG")"
+check "young holder is session debris"  "$YOUNG" "$(holders_younger_than 500 "$YOUNG")"
+check "old holder is pre-existing"      ""       "$(holders_younger_than 500 "$OLD")"
+check "mixed: only the young one"       "$YOUNG" "$(holders_younger_than 500 "$OLD $YOUNG")"
 # FAIL OPEN (R4.4). An unknown session age must mean silence, never "report
 # everything" — that would hand the user a kill command aimed at their own
 # server, the single outcome the no-kill design exists to prevent.
-check "empty age -> report nothing"     ""       "$(classify_holders "" "$OLD $YOUNG")"
-check "non-numeric age -> report nothing" ""     "$(classify_holders "wat" "$YOUNG")"
-check "zero age -> report nothing"      ""       "$(classify_holders 0 "$YOUNG")"
-check "dead pid is skipped"             ""       "$(classify_holders 500 "999999")"
+check "empty age -> report nothing"     ""       "$(holders_younger_than "" "$OLD $YOUNG")"
+check "non-numeric age -> report nothing" ""     "$(holders_younger_than "wat" "$YOUNG")"
+check "zero age -> report nothing"      ""       "$(holders_younger_than 0 "$YOUNG")"
+check "dead pid is skipped"             ""       "$(holders_younger_than 500 "999999")"
 kill "$YOUNG" 2>/dev/null
 
 echo
@@ -279,7 +303,7 @@ check "warned file records the pid" "yes" \
 kill "$ORPHAN" 2>/dev/null
 # A holder older than the session is the user's, and must never be reported.
 check "no port holder -> silent" "" "$(printf '{"session_id":"sessNONE"}' | $H/stop-orphan-check.sh)"
-unset DEV_PORT
+export DEV_PORT=3000   # restore, do not unset: lib.sh resolved it at source time
 
 echo
 echo "=== F. sweep removes warned state older than 7 days ==="
@@ -303,7 +327,7 @@ ORPHAN2=$!
 for _ in $(seq 1 20); do [ -n "$(dev_port_pids)" ] && break; sleep 0.2; done
 printf '{}' | $H/stop-orphan-check.sh > /dev/null
 kill "$ORPHAN2" 2>/dev/null
-unset DEV_PORT
+export DEV_PORT=3000   # restore, do not unset: lib.sh resolved it at source time
 ls "$D/warned-nosession.txt" >/dev/null 2>&1 && r=yes || r=no
 check "fallback file created" "yes" "$r"
 ls "$D/warned-.txt" >/dev/null 2>&1 && r=yes || r=no

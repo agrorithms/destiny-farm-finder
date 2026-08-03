@@ -36,7 +36,7 @@ NOW="$(dev_port_pids)"
 [ -z "$NOW" ] && exit 0
 
 # Younger than the session => this session started it.
-NEW="$(classify_holders "$AGE" "$NOW")"
+NEW="$(holders_younger_than "$AGE" "$NOW")"
 [ -z "$NEW" ] && exit 0
 
 WARNED="$(cat "$WARNED_FILE" 2>/dev/null || echo "")"

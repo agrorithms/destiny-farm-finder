@@ -73,7 +73,7 @@ The pre-existing-server briefing is not replaced. `guard-dev-server.sh` denies
 at the moment it matters with a better-targeted message, and CLAUDE.md already
 carries the standing instruction not to kill a server you did not start.
 
-### R4 — Orphan reporting at session end
+### R4 — Orphan reporting (Stop hook, per turn)
 Report dev servers still running that this session started.
 
 - R4.1 Must NOT kill anything — report only, including a ready-to-use kill
@@ -105,7 +105,7 @@ Report dev servers still running that this session started.
   This case cannot be tested end-to-end: every process a test spawns is a
   descendant of the real `claude`, so "no ancestor" is unreachable from inside a
   session. The decision logic is therefore split into a pure function
-  (`classify_holders`, age passed in) which IS tested, and the ancestry walk
+  (`holders_younger_than`, age passed in) which IS tested, and the ancestry walk
   (`session_age`), covered by a smoke test asserting it finds an ancestor.
 
 ### R5 — Per-session state isolation
@@ -182,6 +182,23 @@ files must prompt rather than run freely.
   Deliberate consequence: CLAUDE.md's restore procedure step
   `rm data/raid-tracker.db-wal` now prompts. That is a rarely-run, deliberately
   dangerous step and is exactly what this rule is for.
+- R7.2b **Added 2026-08-03.** `git clean`'s dry-run exemption must be evaluated
+  **per clause**, and must never suppress the other rules.
+
+  The first implementation grepped the whole command for any `-`-flag containing
+  an `n` and then exited the hook. An unrelated `head -n 20`, `sort -n` or
+  `grep -n` anywhere in the command therefore un-gated a real destructive clean
+  AND disabled R7.2/R7.3 for that call. Caught independently by both axes of the
+  post-implementation review and reproduced:
+
+  ```
+  git clean -fdx                     -> ask
+  git clean -fdx && head -n 20 file  -> ALLOWED   (wrong)
+  grep -n foo x && git clean -fdx    -> ALLOWED   (wrong)
+  ```
+
+  A clean is exempt only when the clause invoking it carries the dry-run flag
+  itself. Pinned by regression tests at both the predicate and hook level.
 - R7.4 **Added 2026-08-03.** R7 matches with `invokes_strict()`, which differs
   from `invokes()` in two ways: quoted spans are NOT blanked (so
   `sh -c "rm -rf x"` is visible), and `sh -c` / `bash -c` are accepted as
