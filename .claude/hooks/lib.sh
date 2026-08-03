@@ -29,32 +29,72 @@ HOOK_STATE_DIR="${HOOK_STATE_DIR:-/tmp/claude-hooks-$(id -u)}"
 # Session state is set up on demand, NOT at source time. The three PreToolUse
 # guards never touch it, and they run in parallel on every single Bash call —
 # resolving the session id there would spend a second `jq` per guard per command
-# to compute filenames nothing reads.
+# to compute a filename nothing reads.
+#
+# Only ONE file remains. The session-start baseline snapshot is gone: orphan
+# detection now compares process ages (see session_age / classify_holders), so
+# there is nothing to record when a session begins.
 init_session_state() {
   mkdir -p "$HOOK_STATE_DIR" 2>/dev/null
   chmod 700 "$HOOK_STATE_DIR" 2>/dev/null
 
   # Session id, sanitised for use in a filename. Falls back to a fixed name so a
-  # missing session_id degrades to the old shared-file behaviour rather than
-  # producing "devserver-.txt".
+  # missing session_id degrades to shared-file behaviour rather than producing
+  # "warned-.txt".
   SESSION_KEY="$(hook_field '.session_id' | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
   [ -z "$SESSION_KEY" ] && SESSION_KEY="nosession"
 
-  # Port holders at session start — the baseline the Stop hook diffs against.
-  SNAPSHOT_FILE="$HOOK_STATE_DIR/devserver-$SESSION_KEY.txt"
   # PIDs already reported to the user, so Stop warns once instead of every turn.
   WARNED_FILE="$HOOK_STATE_DIR/warned-$SESSION_KEY.txt"
 }
 
-# Delete state from sessions that ended without firing SessionEnd (crash, or a
-# SIGINT exit if those skip cleanup — unconfirmed). Cleanup must never depend
-# on a graceful exit.
+# Delete state from sessions that are long gone.
 #
-# Stop touches both of a live session's files every turn, so the two never age
-# apart and only genuinely dead sessions reach 7 days.
+# This is now the ONLY cleanup — the SessionEnd hook is gone, and it was never a
+# guarantee anyway (it does not fire on a hard kill, and whether a Ctrl+C exit
+# reaches it was never established). Running from Stop means it sweeps every
+# turn rather than only when a new session starts in this repo.
 sweep_stale_state() {
   find "$HOOK_STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
 }
+
+# Strip leading and trailing whitespace. PID sets travel as space-joined
+# strings; this was open-coded as the same sed in three places.
+trim() {
+  sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$1"
+}
+
+# Age in seconds of the Claude Code session this hook is running under, or empty
+# if it cannot be determined.
+#
+# Walks UP the process tree looking for `claude`. Do not shortcut this to $PPID:
+# a hook's parent is a per-invocation `/bin/sh -c` wrapper whose own age is
+# always 0. Reading that instead would classify every port holder as older than
+# the session, so nothing would ever be reported and the check would be silently
+# dead. Verified by instrumenting a live hook:
+#
+#   hook ppid=10987
+#   10987  1464  0     /bin/sh -c "$CLAUDE_PROJECT_DIR/.claude/hooks/..."
+#    1464    10  2778  claude
+#
+# The walk rather than a fixed depth of two, because that wrapper is a harness
+# implementation detail that may change.
+#
+# Empty return is meaningful: it means FAIL OPEN. Callers must report nothing.
+session_age() {
+  local p ppid comm
+  p="$PPID"
+  while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+    read -r ppid comm <<<"$(ps -o ppid=,comm= -p "$p" 2>/dev/null)"
+    [ -z "$ppid" ] && return 0          # process vanished mid-walk
+    if [ "$comm" = "claude" ]; then
+      ps -o etimes= -p "$p" 2>/dev/null | tr -d ' '
+      return 0
+    fi
+    p="$ppid"
+  done
+}
+
 
 # PIDs currently listening on the dev port. Empty if the port is free.
 #
@@ -70,14 +110,46 @@ dev_port_pids() {
   local pids
   pids="$(ss -ltnpH "sport = :${DEV_PORT}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)"
   [ -z "$pids" ] && pids="$(fuser "${DEV_PORT}/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | sort -u)"
-  echo "$pids" | tr '\n' ' ' | sed 's/^ *//; s/ *$//'
+  trim "$(tr '\n' ' ' <<<"$pids")"
 }
 
 # PIDs of a genuine `next build`. The decisive cmdline is
 #   node <repo>/node_modules/.bin/next build
 # The [n] bracket keeps the pattern from matching this script's own cmdline.
 next_build_pids() {
-  pgrep -f '[n]ode_modules/.bin/next build' 2>/dev/null | tr '\n' ' ' | sed 's/ $//'
+  trim "$(pgrep -f '[n]ode_modules/.bin/next build' 2>/dev/null | tr '\n' ' ')"
+}
+
+# Of the PIDs in $2..., echo those younger than session age $1 — i.e. the ones
+# this session started. Replaces the session-start baseline snapshot.
+#
+# Why age rather than a recorded baseline: the snapshot had to survive /clear,
+# resume, compact and fork, and it did not — SessionEnd fires on `clear` and
+# `resume`, so re-entering deleted the baseline and every port holder then read
+# as debris. Process age needs no state, so there is nothing to lose.
+#
+# Kept pure (age passed in, not looked up) so the fail-open path can be tested.
+# It cannot be staged end-to-end: everything a test spawns is a descendant of
+# the real `claude`, so "no ancestor" is unreachable from inside a session.
+#
+# Every non-numeric or empty age FAILS OPEN and reports nothing. Reporting on a
+# bad age would hand the user a kill command aimed at their own server.
+#
+# Known and accepted: a server the USER starts mid-session, in another terminal,
+# is younger than the session and will be reported. The snapshot design had the
+# identical hole — it was not in the baseline either — so this is not a
+# regression. The message is worded accordingly.
+classify_holders() {
+  local age="$1"; shift
+  local pid hage out=""
+  [ -z "$age" ] && return 0
+  case "$age" in ''|*[!0-9]*) return 0 ;; esac
+  for pid in $*; do
+    hage="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+    case "$hage" in ''|*[!0-9]*) continue ;; esac
+    [ "$hage" -lt "$age" ] && out="$out $pid"
+  done
+  trim "$out"
 }
 
 # One-line human description of a PID list, for the messages the user reads.

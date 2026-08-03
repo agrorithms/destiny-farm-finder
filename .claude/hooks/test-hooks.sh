@@ -223,65 +223,110 @@ check "git clean -fdx -> ask" "ask" "$(decision $H/guard-destructive.sh '"git cl
 check "rm -rf with a glob -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm -rf /tmp/nonexistent-dir-*"')"
 
 echo
-echo "=== E. SessionEnd cleanup deletes only its own session ==="
-rm -rf "$D"
-printf '{"session_id":"sessAAA"}' | $H/session-start-snapshot.sh > /dev/null
-printf '{"session_id":"sessBBB"}' | $H/session-start-snapshot.sh > /dev/null
-printf '{"session_id":"sessAAA"}' | $H/session-end-cleanup.sh
-remaining=$(ls -1 "$D" | tr '\n' ' ' | sed 's/ $//')
-check "only B's files remain" "devserver-sessBBB.txt warned-sessBBB.txt" "$remaining"
+echo "=== E. classify_holders(): the orphan decision, as a pure function ==="
+# Replaces the whole session-start-snapshot mechanism. A port holder is this
+# session's debris if it is YOUNGER than the session itself.
+#
+# Split out as a pure function on purpose: session_age() does the ancestry walk
+# and nothing else, so the decision logic can be tested with synthetic ages and
+# no sleeps. The fail-open case in particular CANNOT be staged end-to-end —
+# every process a test spawns is a descendant of the real `claude`, so "no
+# ancestor" is unreachable from inside a session.
+sleep 300 & YOUNG=$!            # age 0
+OLD=1                           # init, older than any session
+check "young holder is session debris"  "$YOUNG" "$(classify_holders 500 "$YOUNG")"
+check "old holder is pre-existing"      ""       "$(classify_holders 500 "$OLD")"
+check "mixed: only the young one"       "$YOUNG" "$(classify_holders 500 "$OLD $YOUNG")"
+# FAIL OPEN (R4.4). An unknown session age must mean silence, never "report
+# everything" — that would hand the user a kill command aimed at their own
+# server, the single outcome the no-kill design exists to prevent.
+check "empty age -> report nothing"     ""       "$(classify_holders "" "$OLD $YOUNG")"
+check "non-numeric age -> report nothing" ""     "$(classify_holders "wat" "$YOUNG")"
+check "zero age -> report nothing"      ""       "$(classify_holders 0 "$YOUNG")"
+check "dead pid is skipped"             ""       "$(classify_holders 500 "999999")"
+kill "$YOUNG" 2>/dev/null
 
 echo
-echo "=== E2. SessionStart is non-destructive on re-entry (/clear, /compact) ==="
-# The core fix. SessionStart fires on all five matchers; if it re-baselined and
-# truncated the warned set each time, a compact would both adopt this session's
-# own server as pre-existing AND restart the per-turn nag R4.3 forbids.
-rm -rf "$D"
-printf '{"session_id":"sessRE"}' | $H/session-start-snapshot.sh > /dev/null
-echo "99991 99992" > "$D/devserver-sessRE.txt"
-echo "77771" > "$D/warned-sessRE.txt"
-printf '{"session_id":"sessRE"}' | $H/session-start-snapshot.sh > /dev/null
-check "baseline preserved across re-entry" "99991 99992" "$(cat "$D/devserver-sessRE.txt")"
-check "warned set preserved across re-entry" "77771" "$(cat "$D/warned-sessRE.txt")"
+echo "=== E2. session_age(): the ancestry walk ==="
+# Cannot assert a VALUE — it depends on when this session started. What it can
+# assert is that the walk finds a claude ancestor at all. This is the one guard
+# against the mistake that nearly shipped: $PPID is a per-invocation `sh -c`
+# wrapper with etimes=0, NOT the claude process. A fixed-depth lookup would have
+# read 0, classified every holder as pre-existing, and silently gone dead.
+AGE="$(session_age)"
+check "finds a claude ancestor" "yes" "$([ -n "$AGE" ] && echo yes || echo no)"
+check "age is numeric"          "yes" "$(case "$AGE" in ''|*[!0-9]*) echo no;; *) echo yes;; esac)"
+check "age is plausible (>0s)"  "yes" "$([ "${AGE:-0}" -gt 0 ] && echo yes || echo no)"
 
 echo
-echo "=== E3. Stop fails OPEN when there is no baseline ==="
-# A missing snapshot must not read as "the port was empty at session start" —
-# that would report the user's own server as debris, with a kill command.
+echo "=== E3. Stop hook end-to-end: reports once, then stays quiet (R4.3) ==="
+# Stop fires once per TURN, not once per session, so an orphan must be reported
+# exactly once. Uses a spare port so a real dev server on 3000 is untouched.
+rm -rf "$D"
+export DEV_PORT=3999
+nc -l 3999 >/dev/null 2>&1 &
+ORPHAN=$!
+for _ in $(seq 1 20); do [ -n "$(dev_port_pids)" ] && break; sleep 0.2; done
+first="$(printf '{"session_id":"sessSTOP"}' | $H/stop-orphan-check.sh)"
+second="$(printf '{"session_id":"sessSTOP"}' | $H/stop-orphan-check.sh)"
+check "first turn reports the orphan" "yes" \
+  "$(jq -e --arg p "$ORPHAN" '.systemMessage | test($p)' <<<"$first" >/dev/null 2>&1 && echo yes || echo no)"
+check "report names a kill command" "yes" \
+  "$(jq -re '.systemMessage' <<<"$first" 2>/dev/null | grep -q 'kill ' && echo yes || echo no)"
+check "second turn stays silent (no re-nag)" "" "$second"
+check "warned file records the pid" "yes" \
+  "$(grep -qw "$ORPHAN" "$D/warned-sessSTOP.txt" 2>/dev/null && echo yes || echo no)"
+kill "$ORPHAN" 2>/dev/null
+# A holder older than the session is the user's, and must never be reported.
+check "no port holder -> silent" "" "$(printf '{"session_id":"sessNONE"}' | $H/stop-orphan-check.sh)"
+unset DEV_PORT
+
+echo
+echo "=== F. sweep removes warned state older than 7 days ==="
+# R6.2. SessionEnd is gone, so the age-based sweep is now the ONLY cleanup, and
+# it runs from Stop — every turn, rather than only when a new session starts in
+# this repo. That closes review finding P-4.
 rm -rf "$D"; mkdir -p "$D"
-out="$(printf '{"session_id":"sessNONE"}' | $H/stop-orphan-check.sh)"
-check "no snapshot -> silent" "" "$out"
-check "no snapshot -> file not created" "no" "$(ls "$D/devserver-sessNONE.txt" >/dev/null 2>&1 && echo yes || echo no)"
-
-echo
-echo "=== E4. Stop refreshes mtime so the sweep can't split the pair ==="
-rm -rf "$D"
-printf '{"session_id":"sessAGE"}' | $H/session-start-snapshot.sh > /dev/null
-touch -d '10 days ago' "$D/devserver-sessAGE.txt" "$D/warned-sessAGE.txt"
-printf '{"session_id":"sessAGE"}' | $H/stop-orphan-check.sh > /dev/null
-check "snapshot mtime refreshed" "0" "$(find "$D" -name 'devserver-sessAGE.txt' -mtime +7 | wc -l)"
-check "warned mtime refreshed" "0" "$(find "$D" -name 'warned-sessAGE.txt' -mtime +7 | wc -l)"
-
-echo
-echo "=== F. sweep removes state older than 7 days ==="
-rm -rf "$D"
-printf '{"session_id":"sessAAA"}' | $H/session-start-snapshot.sh > /dev/null
-printf '{"session_id":"sessBBB"}' | $H/session-start-snapshot.sh > /dev/null
-touch -d '10 days ago' "$D/devserver-deadsession.txt"
+touch "$D/warned-livesession.txt"
 touch -d '10 days ago' "$D/warned-deadsession.txt"
-before=$(ls -1 "$D" | wc -l)
-printf '{"session_id":"sessCCC"}' | $H/session-start-snapshot.sh > /dev/null
-after=$(ls -1 "$D" | grep -c deadsession)
-check "stale files present before sweep" "6" "$before"
-check "stale files gone after sweep" "0" "$after"
+printf '{"session_id":"sessSWEEP"}' | $H/stop-orphan-check.sh > /dev/null
+check "stale state swept"      "0" "$(ls -1 "$D" | grep -c deadsession)"
+check "live state kept"        "1" "$(ls -1 "$D" | grep -c livesession)"
 
 echo
-echo "=== G. missing session_id falls back, does not create 'devserver-.txt' ==="
-printf '{}' | $H/session-start-snapshot.sh > /dev/null
-ls "$D/devserver-nosession.txt" >/dev/null 2>&1 && r=yes || r=no
+echo "=== G. missing session_id falls back, does not create 'warned-.txt' ==="
+# R5.2. Degrade to a fixed name rather than a malformed one.
+rm -rf "$D"
+export DEV_PORT=3999
+nc -l 3999 >/dev/null 2>&1 &
+ORPHAN2=$!
+for _ in $(seq 1 20); do [ -n "$(dev_port_pids)" ] && break; sleep 0.2; done
+printf '{}' | $H/stop-orphan-check.sh > /dev/null
+kill "$ORPHAN2" 2>/dev/null
+unset DEV_PORT
+ls "$D/warned-nosession.txt" >/dev/null 2>&1 && r=yes || r=no
 check "fallback file created" "yes" "$r"
-ls "$D/devserver-.txt" >/dev/null 2>&1 && r=yes || r=no
+ls "$D/warned-.txt" >/dev/null 2>&1 && r=yes || r=no
 check "no malformed empty-key file" "no" "$r"
+
+echo
+echo "=== G2. build guard detects a running build ==="
+# The detection path had NEVER been executed: every prior assertion only checked
+# "allow when nothing is running". Stands in for a real `next build` with a
+# process whose cmdline matches the decisive pattern. The real cmdline is
+# confirmed separately by running an actual build — see the spec.
+FAKEBUILD="$D/fake/node_modules/.bin"
+mkdir -p "$FAKEBUILD"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$FAKEBUILD/next"
+chmod +x "$FAKEBUILD/next"
+"$FAKEBUILD/next" build & FAKEBUILD_PID=$!
+for _ in $(seq 1 20); do [ -n "$(next_build_pids)" ] && break; sleep 0.2; done
+check "build running -> next_build_pids finds it" "yes" \
+  "$([ -n "$(next_build_pids)" ] && echo yes || echo no)"
+check "build running -> second build denied" "deny" "$(decision $H/guard-build.sh '"npm run build"')"
+check "build running -> mention still allowed" "allow" "$(decision $H/guard-build.sh '"echo \"npm run build\""')"
+kill "$FAKEBUILD_PID" 2>/dev/null
+wait "$FAKEBUILD_PID" 2>/dev/null
 
 echo
 echo "=== H. manual run with no stdin must not hang ==="
