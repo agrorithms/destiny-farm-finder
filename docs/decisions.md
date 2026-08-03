@@ -286,3 +286,142 @@ not disaster prevention.
 Verified by running `getDb()` under `tsx` with `VITEST=true` across four cases — sentinel missing,
 sentinel mismatched, sentinel matching, and `VITEST` unset — each against a scratch path so a broken
 guard could not touch the real database. First two throw, last two proceed.
+
+---
+
+## 2026-07-31 — Enforcement hooks for environment debris (`.claude/hooks/`)
+
+Not an ADR. Checked against ADRs 0001–0005 first, per standing preference: this contradicts and
+hardens none of them. All five are application/data-behaviour decisions — display caps, session
+counts, test isolation, network mocking, loop resilience — and none touches tooling. This file's
+own header covers decisions that "live partly outside the codebase … where a code comment can't
+reach them", which describes `.claude/` exactly.
+
+### Why hooks rather than more documentation
+
+A usage-insights report over 24 sessions produced one finding worth acting on: **process problems
+were being fixed with documentation instead of automation.** The repo already had a `verify` skill,
+five ADRs, this file, and an unusually thorough CLAUDE.md — and zero hooks.
+
+That matters because the two friction categories are of different kinds:
+
+- **Documentation is advisory.** It works only if the model reads and honours it. Fine for domain
+  conventions (`player identity is Name#Code`) where the model has no competing instinct.
+- **Hooks are enforcement.** They run whether or not the model remembers, and can refuse a tool
+  call outright.
+
+The environment-debris friction is the second kind, and had recurred for five weeks *despite being
+well understood* — because its failures surface after the session ends, when no instruction is in
+context. An orphaned `next dev` holding port 3000 blocks the user's own `npm run dev` days later.
+Concurrent `next build` runs collide on the build lock, which requires knowing about a process
+started in a different tool call. `npm uninstall sqlite3` when only the `package.json` entry was
+wanted needs a *stop*, not a reminder.
+
+The workflow friction — Claude treating discussion as an implementation cue — is the *first* kind:
+a standing preference, not an invisible failure. That became CLAUDE.md §Workflow, not a hook.
+
+### No hook may kill anything
+
+The insights report recommended a SessionStart hook running `lsof -ti:3000 | xargs kill -9`.
+Rejected: **the process holding port 3000 is as likely to be the user's deliberately-started server
+as it is debris.** Every hook detects and reports. The entire snapshot/diff mechanism exists for no
+other purpose than letting the report distinguish "yours" from "this session's".
+
+This is the constraint to check first against any future change here.
+
+### False positives cost more than bypasses
+
+The matching helper `invokes()` is a best-effort backstop against a *forgetful* Claude, not an
+evasion-proof gate — the model it guards against writes `npm run dev`, not an obfuscated form. That
+ordering decided four separate choices: heredoc bodies and quoted spans are stripped before
+matching; `sh -c` is left as a documented, test-pinned bypass; the Stop hook exits silently rather
+than report without a baseline; single-file `rm -f` is not gated. A bypass means the guard is
+silent. A false positive blocks real work — and a false *orphan report* hands the user a `kill`
+aimed at their own server, which is the one outcome the paragraph above forbids.
+
+### Environment facts, established by testing
+
+The reusable part. All three were found by running against real processes, and each had already
+produced a wrong design before it was caught:
+
+- **`lsof` cannot see network sockets under WSL2.** `lsof -ti:3000` exits 1 against a plainly
+  listening server. The insights report's suggested hook would have silently no-opped forever.
+  `ss` is the primary, `fuser` the fallback.
+- **`pgrep -f "next dev"` self-matches** the hook's own shell wrapper — the whole command string
+  lands in its cmdline — so it false-positives on every invocation. Port-based detection instead,
+  and `[n]ode_modules/.bin/next build` with the bracket trick where pgrep is unavoidable.
+- **A real build's decisive cmdline is `node <repo>/node_modules/.bin/next build`**, not
+  `npm run build`.
+
+### Rejected: narrowing the SessionStart matcher
+
+Worth recording because it looks correct and is not. A review found that the unmatched SessionStart
+hook re-baselines and clears the warned set on `/clear`, `/compact` and resume, and proposed
+restricting the matcher to `startup`. That breaks the mechanism: `clear` and `resume` are also
+SessionEnd *reasons*, so `/clear` deletes the state and then re-enters SessionStart. A hook ignoring
+`clear` leaves the Stop hook with no baseline at all, and every port holder is reported as debris —
+the exact failure the snapshot exists to prevent. The real defect was that the write was
+unconditional. Fixed by writing only when absent; the matcher is unchanged.
+
+Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
+
+## 2026-08-03 — Orphan detection by process age; the snapshot mechanism is gone
+
+Supersedes the two sections above it on baselines. The write-only-when-absent fix did not hold:
+`/clear` and `resume` are SessionEnd *reasons*, so SessionEnd deleted the state and SessionStart
+then found nothing to preserve. Reproduced — `/clear` took snapshot `[12345] -> []`, warned
+`[99999] -> []`. `fork` was never covered at all.
+
+**The baseline file was the wrong primitive.** A port holder younger than the `claude` process is
+one this session started; that needs no state, so there is nothing to establish, nothing to lose on
+re-entry, and nothing to clean up. The SessionStart and SessionEnd hooks are deleted and the hook
+surface drops from six to four. Three review findings dissolved rather than being patched.
+
+### The fact that nearly shipped a dead check
+
+**A hook's `$PPID` is not the `claude` process** — it is a per-invocation `/bin/sh -c` wrapper whose
+own `etimes` is always 0. The obvious one-liner (`ps -o etimes= -p $PPID`) would have read 0,
+classified every port holder as older than the session, reported nothing ever, and passed every
+test. Caught by instrumenting a live hook rather than reasoning about it:
+
+```
+10987  1464  0     /bin/sh -c ".../guard-build.sh"
+ 1464    10  2778  claude
+```
+
+Session age must be found by walking up to the nearest `comm=claude`, not at a fixed depth. Note a
+Bash *tool call*'s `$PPID` **is** `claude` directly — only hooks get the extra layer, so measuring
+one and generalising to the other is precisely how this bug is reintroduced.
+
+### False positives cost more than bypasses — except where they don't
+
+The 2026-07-31 rule was derived from the dev-server and build guards, which emit `deny`, and then
+applied to the destructive guard, which emits `ask`. There a false positive costs one keystroke
+while a miss costs `node_modules`, `data/` or `.env`. The destructive guard now matches with a
+stricter variant that sees inside `sh -c "..."`; the two `deny` guards keep the lenient one, and
+not merely by preference — they blank quotes first, so the wrapper would have nothing to match.
+
+### `git clean` was the biggest hole, and nothing was watching it
+
+`rm -rf` was gated; `git clean -fdx` was not. Here it removes `data/` (9.0G), `.env`,
+`.claude/plans/`, `certificates/` and `docs/handoffs/` — none of it recoverable from git. Also
+newly gated: `git reset --hard`, `git checkout --`, `git restore`, and **any `rm` naming a
+gitignored path**, which is what finally covers `rm data/raid-tracker.db` — a file, so no recursive
+flag was ever involved.
+
+That last rule uses `git check-ignore` rather than a hardcoded list of precious paths. Of 20
+gitignored entries only ~5 are regenerable; a hand-drafted list was already missing five real ones
+when written. Consequence accepted: CLAUDE.md's restore step `rm data/raid-tracker.db-wal` now
+prompts.
+
+### Two more things testing settled
+
+- **The build guard's detection path had never been executed** — every assertion checked only
+  "allow when nothing is running". Confirmed against a real build: `next_build_pids()` matches the
+  `node .../node_modules/.bin/next build` process only, not the two `sh -c` wrappers, the npm
+  wrapper, or the webpack/postcss workers.
+- **The test suite was deleting the live hook state directory**, silently disabling the orphan check
+  of any running session. The state path is now overridable and the suite points at a throwaway.
+
+Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
+Behavioural suite: `bash .claude/hooks/test-hooks.sh` (87 assertions).
