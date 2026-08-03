@@ -2,7 +2,17 @@
 # Full behavioural test for the .claude/hooks suite. Run: bash .claude/hooks/test-hooks.sh
 cd /home/louisagro/destinyCode/destiny-farm-finder || exit 1
 H=.claude/hooks
-D="/tmp/claude-hooks-$(id -u)"
+
+# Run against a throwaway state dir, NOT the live one.
+#
+# The suite rm -rf's its state dir several times. Pointed at the real
+# /tmp/claude-hooks-$(id -u), that deletes the warned-PID file of any session
+# currently running — silently disabling its orphan check for the rest of the
+# session. Exported before lib.sh is sourced so the hooks under test inherit it.
+export HOOK_STATE_DIR="/tmp/claude-hooks-test-$$"
+D="$HOOK_STATE_DIR"
+trap 'rm -rf "$HOOK_STATE_DIR"' EXIT
+
 source "$H/lib.sh" < /dev/null
 
 pass=0; fail=0
@@ -84,6 +94,26 @@ check "invocation after heredoc -> match" "match" "$(m "$HEREDOC_AFTER" "$DEVPAT
 check "here-string is not a heredoc" "match" "$(m 'grep x <<<"y"
 npm run dev' "$DEVPAT")"
 
+# S-1 regression. A `<<` inside a QUOTED string is not a heredoc opener. When it
+# was treated as one, it adopted a terminator that never arrived and discarded
+# every following line — silently turning all three guards into no-ops. This is
+# the highest-severity bug the suite has caught; do not delete this assertion.
+check "quoted << does not open a heredoc" "match" "$(m 'echo "a << B"
+npm run dev' "$DEVPAT")"
+check "quoted << (destructive pattern)" "match" "$(m 'echo "a << B"
+rm -rf node_modules' 'rm -[a-zA-Z]*[rR][a-zA-Z]*')"
+# The quoted-terminator form must still be recognised as a REAL heredoc — the
+# naive fix for the above (blanking quotes before detecting) breaks exactly this.
+check "quoted-terminator heredoc still strips body" "nomatch" "$(m "cat > f <<'EOF'
+npm run dev
+EOF" "$DEVPAT")"
+check "double-quoted-terminator heredoc still strips body" "nomatch" "$(m 'cat > f <<"EOF"
+npm run dev
+EOF' "$DEVPAT")"
+check "<<- dash form still strips body" "nomatch" "$(m 'cat <<-EOF
+npm run dev
+EOF' "$DEVPAT")"
+
 echo
 echo "=== C. build matcher ==="
 BLDPAT='npm run build|npm run next-build|next build'
@@ -118,7 +148,7 @@ if [ -z "$(dev_port_pids)" ]; then
   STARTED_LISTENER=$!
   for _ in $(seq 1 20); do [ -n "$(dev_port_pids)" ] && break; sleep 0.2; done
 fi
-trap '[ -n "$STARTED_LISTENER" ] && kill "$STARTED_LISTENER" 2>/dev/null' EXIT
+trap 'rm -rf "$HOOK_STATE_DIR"; [ -n "$STARTED_LISTENER" ] && kill "$STARTED_LISTENER" 2>/dev/null' EXIT
 echo "  (port 3000 holders: [$(dev_port_pids)])"
 # A silent hook emits NO output at all (that is what "allow" looks like), so
 # assert on raw output: empty = allowed, else parse the decision.

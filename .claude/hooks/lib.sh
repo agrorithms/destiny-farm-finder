@@ -21,7 +21,10 @@ hook_field() {
 }
 
 # Per-session state lives in one directory so it can be swept in a single find.
-HOOK_STATE_DIR="/tmp/claude-hooks-$(id -u)"
+# Overridable so the test suite can point at a throwaway dir — it deletes its
+# state dir repeatedly, which against the live path would wipe the warned-PID
+# file of any session currently running.
+HOOK_STATE_DIR="${HOOK_STATE_DIR:-/tmp/claude-hooks-$(id -u)}"
 
 # Session state is set up on demand, NOT at source time. The three PreToolUse
 # guards never touch it, and they run in parallel on every single Bash call —
@@ -82,34 +85,6 @@ describe_pids() {
   ps -o pid=,args= -p ${1} 2>/dev/null | cut -c1-100 | paste -sd'; ' -
 }
 
-# Drop the BODY of every heredoc, keeping the line that opens it.
-#
-# invokes() matches per line, so a heredoc whose body line begins with a matched
-# command — `cat > spec.md <<EOF` documenting `npm run dev`, for instance —
-# reads as a real invocation and gets denied. Spec R1.3 names doc edits
-# explicitly, and a false positive costs more than a missed match: it blocks
-# legitimate work, and it does so precisely when a server IS running, which is
-# when you are most likely to be writing about one.
-#
-# The `(^|[^<])` guard is load-bearing: without it, `grep x <<<"y"` matches
-# starting at the SECOND `<` of the here-string, adopts `y` as a terminator, and
-# silently swallows every following line. A here-string is not a heredoc.
-strip_heredocs() {
-  local line term="" out=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [ -n "$term" ]; then
-      # Inside a body: drop every line until the terminator closes it.
-      [[ "$line" =~ ^[[:space:]]*${term}[[:space:]]*$ ]] && term=""
-      continue
-    fi
-    out+="$line"$'\n'
-    if [[ "$line" =~ (^|[^<])\<\<-?[[:space:]]*[\"\']?([A-Za-z_][A-Za-z0-9_]*)[\"\']? ]]; then
-      term="${BASH_REMATCH[2]}"
-    fi
-  done <<<"$1"
-  printf '%s' "$out"
-}
-
 # Blank the contents of balanced quoted spans.
 #
 # invokes() splits on shell separators, so a separator INSIDE a quoted string
@@ -122,8 +97,59 @@ strip_heredocs() {
 # Double quotes are processed first so an apostrophe inside them
 # (`git commit -m "don't"`) is consumed as ordinary text rather than opening a
 # span of its own.
+#
+# Defined before strip_heredocs because that function calls it.
 blank_quoted() {
   sed "s/\"[^\"]*\"/\"\"/g; s/'[^']*'/''/g" <<<"$1"
+}
+
+# Drop the BODY of every heredoc, keeping the line that opens it.
+#
+# invokes() matches per line, so a heredoc whose body line begins with a matched
+# command — `cat > spec.md <<EOF` documenting `npm run dev`, for instance —
+# reads as a real invocation and gets denied. Spec R1.3 names doc edits
+# explicitly, and a false positive costs more than a missed match: it blocks
+# legitimate work, and it does so precisely when a server IS running, which is
+# when you are most likely to be writing about one.
+#
+# OPENER DETECTION IS QUOTE-AWARE, and must stay that way (bug S-1). A `<<`
+# inside a quoted string — `echo "a << B"` — is not a heredoc opener, but when it
+# was read as one it adopted a terminator that never arrived and discarded every
+# following line. That silently turned all three guards into no-ops: the command
+# they were meant to gate sat on a later line and was simply never seen.
+#
+# Detection therefore runs on a PROBE copy of the line, never on the line itself:
+#
+#   1. Rewrite `<<'EOF'` / `<<"EOF"` to bare `<<EOF`. This must happen FIRST.
+#      Blanking quotes without it eats the terminator, the opener stops being
+#      recognised, and real heredoc bodies leak back into the match — and
+#      `<<'EOF'` is the most common form in this repo.
+#   2. Blank remaining quoted spans, so a `<<` inside a string disappears.
+#   3. Match the opener on the result; keep the ORIGINAL line in the output.
+#
+# Doing it this way makes the function independent of whether the caller has
+# already blanked quotes — which matters because invokes_strict() deliberately
+# does not.
+#
+# The `(^|[^<])` guard is separate and also load-bearing: without it,
+# `grep x <<<"y"` matches starting at the SECOND `<` of the here-string, adopts
+# `y` as a terminator, and swallows the rest. A here-string is not a heredoc.
+strip_heredocs() {
+  local line probe term="" out=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$term" ]; then
+      # Inside a body: drop every line until the terminator closes it.
+      [[ "$line" =~ ^[[:space:]]*${term}[[:space:]]*$ ]] && term=""
+      continue
+    fi
+    out+="$line"$'\n'
+    probe="$(sed -E "s/<<-?[[:space:]]*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]/<<\1/g" <<<"$line")"
+    probe="$(blank_quoted "$probe")"
+    if [[ "$probe" =~ (^|[^<])\<\<-?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      term="${BASH_REMATCH[2]}"
+    fi
+  done <<<"$1"
+  printf '%s' "$out"
 }
 
 # True if $1 actually INVOKES one of the alternatives in ERE $2, rather than
