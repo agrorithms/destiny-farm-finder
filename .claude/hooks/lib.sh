@@ -152,6 +152,15 @@ strip_heredocs() {
   printf '%s' "$out"
 }
 
+# Shell keywords and wrapper commands that may sit between the start of a
+# command position and the real command. Shared by invokes() and
+# invokes_strict() so the two cannot drift apart.
+#
+# `timeout` takes an argument, hence the trailing duration. `stdbuf`, `command`
+# and `exec` have no incident history behind them, unlike nohup/env/timeout —
+# they are kept because removing them opens a gap for no measurable gain.
+HOOK_WRAPPERS='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|then|do|else|elif|nohup|exec|command|stdbuf|env|timeout[[:space:]]+[0-9]+[smhd]?)'
+
 # True if $1 actually INVOKES one of the alternatives in ERE $2, rather than
 # merely mentioning it. A plain substring grep denies `echo "npm run dev"`,
 # `grep -r "npm run dev" .`, or editing this very file — verified the hard way,
@@ -174,7 +183,77 @@ invokes() {
   cmd="$(strip_heredocs "$1")"
   cmd="$(blank_quoted "$cmd")"
   cmd="$(tr ';&|()' '\n' <<<"$cmd")"
-  grep -qE '^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|then|do|else|elif|nohup|exec|command|stdbuf|env|timeout[[:space:]]+[0-9]+[smhd]?)[[:space:]]+)*('"$2"')([[:space:]]|$)' <<<"$cmd"
+  grep -qE "^[[:space:]]*(${HOOK_WRAPPERS}[[:space:]]+)*($2)([[:space:]]|$)" <<<"$cmd"
+}
+
+# invokes() for the destructive guard, which is deliberately stricter.
+#
+# The spec's matching policy — "a false positive costs more than a bypass" — was
+# derived from R1/R2, where the decision is DENY and a false positive blocks real
+# work at exactly the wrong moment. For R7 the asymmetry INVERTS: the decision is
+# ASK, so a false positive costs one keystroke, while a miss costs node_modules,
+# data/ or .env. Two differences follow:
+#
+#   - Quoted spans are NOT blanked, so `sh -c "rm -rf x"` stays visible. This is
+#     why strip_heredocs() had to become quote-aware on its own (bug S-1) rather
+#     than relying on blank_quoted running first.
+#   - `sh -c` / `bash -c` are accepted as wrappers, including the opening quote.
+#
+# The §A3 bypass stays pinned for R1/R2, and not merely by preference: those
+# still blank quotes, so `sh -c "npm run dev"` becomes `sh -c ""` before matching
+# and the wrapper would have nothing to match against. Closing it there would
+# mean R1/R2 dropping quote-blanking too, and inheriting its false positives on
+# a DENY.
+#
+# Known accepted cost: a separator inside a quoted string opens a command
+# position, so `git commit -m "stop; rm -rf x"` asks. Pinned by a test.
+invokes_strict() {
+  local cmd
+  cmd="$(strip_heredocs "$1")"
+  cmd="$(tr ';&|()' '\n' <<<"$cmd")"
+  grep -qE "^[[:space:]]*((sh|bash|zsh)[[:space:]]+-c[[:space:]]+['\"]?)?(${HOOK_WRAPPERS}[[:space:]]+)*($2)([[:space:]]|$)" <<<"$cmd"
+}
+
+# True if $1 is an `rm` that names a path git is ignoring.
+#
+# Motivation: `rm data/raid-tracker.db` needs no -r flag — it is a file — so the
+# recursive-flag rule never sees it. That is 9.0G of database whose only backups
+# are manual snapshots. Same for `rm .env`, which is not in git at all.
+#
+# Resolved dynamically rather than from a hardcoded list of precious paths. Of
+# the 20 gitignored entries in this repo only ~5 are regenerable (.next/,
+# node_modules/, dist/, next-env.d.ts, tsconfig.tsbuildinfo); the rest — .env,
+# certificates/, .claude/plans/, docs/handoffs/, docs/tickets/, seeds.txt,
+# scripts/cleanup/ — cannot be recovered by any command. A hand-maintained list
+# was already missing five of those when first drafted, and would drift again
+# every time .gitignore changes. `git check-ignore` costs ~2ms and only runs once
+# the destructive matcher has already fired.
+#
+# No regenerable-path exemption is needed: the noisy cases (`rm -rf .next`,
+# `rm -rf node_modules`) are already gated by the flag rule, so this only adds
+# coverage for non-recursive rm, where the regenerable paths are things nobody
+# types.
+rm_touches_ignored() {
+  local tok repo
+  invokes_strict "$1" 'rm' || return 1
+  repo="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+  # Globbing off: `rm -rf /tmp/foo-*` must not expand against the real
+  # filesystem while we are only reading tokens.
+  set -f
+  # Quotes are stripped so `rm "data/raid-tracker.db"` is seen; separators
+  # become spaces so a chained command's arguments are scanned too.
+  for tok in $(tr ';&|()' '  ' <<<"$1" | tr -d "\"'"); do
+    case "$tok" in
+      -*|rm|sh|bash|zsh) continue ;;
+    esac
+    if git -C "$repo" check-ignore -q -- "$tok" 2>/dev/null; then
+      set +f
+      return 0
+    fi
+  done
+  set +f
+  return 1
 }
 
 # Emit a PreToolUse decision. $1 = "deny" | "ask", $2 = reason shown to Claude

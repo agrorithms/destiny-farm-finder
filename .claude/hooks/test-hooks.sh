@@ -138,6 +138,42 @@ check "destructive: mention" "nomatch" "$(m 'echo "npm uninstall sqlite3"' "$DES
 check "destructive: rm -f single file not gated" "nomatch" "$(m 'rm -f /tmp/x' "$DESTPAT")"
 
 echo
+echo "=== C3. invokes_strict(): R7 sees inside quotes, R1/R2 still do not ==="
+# Spec's matching policy says "a false positive costs more than a bypass". That
+# was derived from R1/R2, where the decision is DENY and a false positive blocks
+# real work. R7 emits ASK, so the asymmetry inverts: a missed `rm -rf` destroys
+# state, a false prompt costs one keystroke. invokes_strict() therefore skips
+# quote-blanking and allows an `sh -c` wrapper.
+ms() { invokes_strict "$1" "$2" && echo match || echo nomatch; }
+DESTPAT='npm uninstall|npm rm|npm remove|npm prune|git clean|git reset --hard|git checkout --|git restore|rm -[a-zA-Z]*[rR][a-zA-Z]*'
+check "strict: sh -c \"rm -rf x\"" "match" "$(ms 'sh -c "rm -rf x"' "$DESTPAT")"
+check "strict: bash -c 'npm uninstall y'" "match" "$(ms "bash -c 'npm uninstall y'" "$DESTPAT")"
+# ...while R1/R2 keep the pinned §A3 bypass. Adding the wrapper there would do
+# nothing anyway: they blank quotes first, so sh -c "npm run dev" -> sh -c "".
+check "lenient: sh -c \"npm run dev\" still bypasses" "nomatch" "$(m 'sh -c "npm run dev"' "$DEVPAT")"
+# A bare mention is still not an invocation even without quote-blanking: the
+# match must sit at the start of a command position, and `echo` is not a wrapper.
+check "strict: echo \"rm -rf x\" is not an invocation" "nomatch" "$(ms 'echo "rm -rf x"' "$DESTPAT")"
+# ACCEPTED false positive, pinned. Dropping blank_quoted means a separator inside
+# a quoted string opens a command position. Costs one keystroke on an `ask`.
+check "strict: accepted false positive on quoted separator" "match" \
+  "$(ms 'git commit -m "stop; rm -rf x"' "$DESTPAT")"
+
+echo
+echo "=== C4. destructive git commands (R7, D7) ==="
+# git clean -fdx here removes data/ (9.0G), .env, .claude/plans/, certificates/
+# and docs/handoffs/ — none of them recoverable from git. It was entirely
+# ungated while `rm -rf` was gated.
+check "git clean -fdx" "match" "$(ms 'git clean -fdx' "$DESTPAT")"
+check "git clean in a chain" "match" "$(ms 'cd . && git clean -fd' "$DESTPAT")"
+check "git reset --hard" "match" "$(ms 'git reset --hard origin/main' "$DESTPAT")"
+check "git checkout -- ." "match" "$(ms 'git checkout -- .' "$DESTPAT")"
+check "git restore ." "match" "$(ms 'git restore .' "$DESTPAT")"
+# Switching branches is not destructive and must stay silent.
+check "git checkout main (not gated)" "nomatch" "$(ms 'git checkout main' "$DESTPAT")"
+check "git reset (soft) not gated" "nomatch" "$(ms 'git reset HEAD~1' "$DESTPAT")"
+
+echo
 echo "=== D. guard end-to-end (port 3000 occupied) ==="
 # Occupy the port ourselves so the suite is self-contained. The guards only ask
 # "is anything listening on 3000", so a bare netcat listener is a faithful
@@ -164,6 +200,27 @@ check "unrelated command -> allow" "allow" "$(decision $H/guard-dev-server.sh '"
 check "build with no build running -> allow" "allow" "$(decision $H/guard-build.sh '"npm run build"')"
 check "npm uninstall in && chain -> ask" "ask" "$(decision $H/guard-destructive.sh '"cd . && npm uninstall sqlite3"')"
 check "quoted uninstall mention -> allow" "allow" "$(decision $H/guard-destructive.sh '"echo \"npm uninstall x\""')"
+
+echo
+echo "=== D2. R7.3 untracked-path rule (any rm naming a gitignored path) ==="
+# `rm data/raid-tracker.db` needs no -r flag: it is a file. 9.0G, gitignored,
+# backed up only by manual snapshots, and completely ungated by the flag rule.
+# Resolved dynamically via `git check-ignore` rather than a hardcoded list — a
+# hand-written list of "precious" paths was already missing docs/handoffs/,
+# certificates/, scripts/cleanup/ and seeds.txt when it was first drafted.
+check "rm of the live database -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm data/raid-tracker.db"')"
+check "rm -f of the WAL sidecar -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm -f data/raid-tracker.db-wal"')"
+check "rm .env -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm .env"')"
+# Tracked source is recoverable from git; deleting it must not prompt.
+check "rm of a tracked source file -> allow" "allow" "$(decision $H/guard-destructive.sh '"rm src/lib/db/queries.ts"')"
+check "rm outside the repo -> allow" "allow" "$(decision $H/guard-destructive.sh '"rm /tmp/scratch-file"')"
+# A dry run destroys nothing; prompting on it is pure noise.
+check "git clean -ndx (dry run) -> allow" "allow" "$(decision $H/guard-destructive.sh '"git clean -ndx"')"
+check "git clean --dry-run -> allow" "allow" "$(decision $H/guard-destructive.sh '"git clean --dry-run -x"')"
+check "git clean -fdx -> ask" "ask" "$(decision $H/guard-destructive.sh '"git clean -fdx"')"
+# The token scan must not glob-expand; -rf already gates this, so the assertion
+# is really "the scan did not crash or hang on an unmatched glob".
+check "rm -rf with a glob -> ask" "ask" "$(decision $H/guard-destructive.sh '"rm -rf /tmp/nonexistent-dir-*"')"
 
 echo
 echo "=== E. SessionEnd cleanup deletes only its own session ==="
