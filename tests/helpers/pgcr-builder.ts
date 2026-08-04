@@ -2,7 +2,7 @@ import type {
     DestinyHistoricalStatsValue,
     DestinyPostGameCarnageReportData,
     DestinyPostGameCarnageReportEntry,
-} from '@/lib/bungie/types';
+} from '../../src/lib/bungie/types';
 
 /**
  * Programmatic PGCR builders.

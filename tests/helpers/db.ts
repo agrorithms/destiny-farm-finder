@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { getDb } from '@/lib/db';
+import { getDb } from '../../src/lib/db';
 
 /**
  * Access to the per-file test database.
