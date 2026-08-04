@@ -78,7 +78,7 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
  * `next start` child — so this check alone is not sufficient for e2e: it is
  * opt-in by env, and cannot fire if the env never arrives. That gap is closed
  * separately by a fail-fast in playwright.config.ts and by the canary check in
- * e2e/support/global-setup.ts, which observes which database the running server
+ * e2e/support/canary.setup.ts, which observes which database the running server
  * actually opened. See docs/adr/0003.
  *
  * Yes, this means src/ contains a branch that only exists for tests, which is

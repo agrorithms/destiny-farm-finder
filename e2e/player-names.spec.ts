@@ -1,4 +1,5 @@
 import { expect, test } from './support/test-fixtures';
+import { RAID_B, fireteamMemberName, seedFireteams } from './support/seed-world';
 
 /**
  * Flow #3. A player is identified by `Name#Code` and the full form must reach
@@ -12,6 +13,17 @@ import { expect, test } from './support/test-fixtures';
  * The padding case is the one most likely to regress unnoticed: it looks like a
  * valid name, just a different player's.
  */
+
+/**
+ * One fireteam of its own, on the other raid and under its own `82` namespace, so
+ * this file's assertions cannot be perturbed by — or perturb — the counts in
+ * active-sessions-cap.spec.ts regardless of execution order.
+ */
+const SESSION_PREFIX = '82';
+
+test.beforeAll(async () => {
+    seedFireteams({ count: 1, size: 6, prefix: SESSION_PREFIX, raid: RAID_B });
+});
 
 test.describe('player identity', () => {
     test('renders the full Name#Code on the leaderboard', async ({ page }) => {
@@ -37,6 +49,18 @@ test.describe('player identity', () => {
         // lost somewhere between the players table and the row.
         await expect(page.getByRole('link', { name: /^FixtureCharlie$/ })).toHaveCount(0);
         await expect(page.getByRole('link', { name: 'FixtureCharlie#1111' })).toBeVisible();
+    });
+
+    test('renders the full Name#Code on an active-session card', async ({ page }) => {
+        await page.goto('/active-sessions');
+
+        // The other half of this flow. Card rosters are enriched server-side from
+        // the players table via formatBungieDisplayName — a different code path
+        // from the leaderboard, and one that renders raw membership ids when the
+        // identity is missing, which is the failure this pins.
+        await expect(
+            page.getByText(fireteamMemberName(SESSION_PREFIX, 0, 0), { exact: true })
+        ).toBeVisible();
     });
 
     test('links each name to that player\'s profile', async ({ page }) => {

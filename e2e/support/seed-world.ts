@@ -114,9 +114,14 @@ export interface SeedFireteamsOptions {
     count: number;
     /** Members per fireteam. Six is a full raid roster. */
     size?: number;
-    /** Namespace for membership ids, so specs cannot collide. */
+    /** Namespace for membership ids and display names, so specs cannot collide. */
     prefix: string;
     raid?: typeof RAID_A | typeof RAID_B;
+}
+
+/** The rendered `Name#Code` of one seeded roster member. */
+export function fireteamMemberName(prefix: string, fireteam: number, seat: number): string {
+    return `Roster${prefix}F${fireteam}S${seat}#${1000 + fireteam}`;
 }
 
 /**
@@ -134,21 +139,24 @@ export function seedFireteams(options: SeedFireteamsOptions): string[] {
     const { count, size = 6, prefix, raid = RAID_A } = options;
     const startedAtIso: string[] = [];
 
-    for (let team = 0; team < count; team++) {
-        const members = Array.from({ length: size }, (_, seat) => ({
-            membershipId: `${prefix}${String(team).padStart(2, '0')}${String(seat).padStart(2, '0')}`,
+    for (let fireteam = 0; fireteam < count; fireteam++) {
+        const roster = Array.from({ length: size }, (_, seat) => ({
+            membershipId: `${prefix}${String(fireteam).padStart(2, '0')}${String(seat).padStart(2, '0')}`,
             membershipType: 3,
-            displayName: `Team${team}Seat${seat}`,
+            // The prefix is in the display name too, not just the membership id,
+            // so two specs seeding fireteams never produce two players with the
+            // same rendered Name#Code and an ambiguous locator.
+            displayName: `Roster${prefix}F${fireteam}S${seat}`,
             status: 1,
         }));
 
         // Staggered so the display sort (newest first, after multi-member rank)
         // is total rather than arbitrary — the cap must drop a predictable set.
-        const startedAt = new Date((hoursAgo(1) + team * 60) * 1000).toISOString();
+        const startedAt = new Date((hoursAgo(1) + fireteam * 60) * 1000).toISOString();
         startedAtIso.push(startedAt);
 
-        for (const member of members) {
-            seedPlayer(member.membershipId, member.displayName, 1000 + team);
+        for (const member of roster) {
+            seedPlayer(member.membershipId, member.displayName, 1000 + fireteam);
 
             upsertActiveSession({
                 membershipId: member.membershipId,
@@ -158,7 +166,7 @@ export function seedFireteams(options: SeedFireteamsOptions): string[] {
                 activityModeType: 4,
                 raidKey: raid.key,
                 startedAt,
-                partyMembersJson: JSON.stringify(members),
+                partyMembersJson: JSON.stringify(roster),
                 playerCount: size,
             });
         }

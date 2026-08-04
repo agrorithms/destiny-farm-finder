@@ -97,6 +97,14 @@ export default defineConfig({
             DFF_E2E: '1',
             DFF_E2E_RUN_ID: process.env.DFF_E2E_RUN_ID!,
 
+            // NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY is deliberately NOT set here, and
+            // cannot usefully be: Next inlines NEXT_PUBLIC_* at *build* time, so a
+            // value supplied to `next start` never reaches the client bundle. The
+            // browser gets whatever was in .env when `next build` ran. Harmless
+            // today — no baseline spec makes a browser → Bungie call, and
+            // e2e/support/test-fixtures.ts stubs bungie.net regardless — but worth
+            // knowing before writing a spec that depends on the key's value.
+
             // ACTIVE_SESSION_DISPLAY_LIMIT is deliberately NOT overridden here.
             // src/app/active-sessions/page.tsx requests `?limit=600` as a
             // hardcoded literal, and the route 400s when limit exceeds the

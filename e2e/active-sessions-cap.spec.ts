@@ -55,7 +55,9 @@ test.describe('active sessions', () => {
     });
 
     test('reports the true fireteam total even when the cap trims the page', async ({ request }) => {
-        const response = await request.get(`/api/active-sessions?limit=${API_LIMIT}`);
+        // Scoped to this spec's raid so another spec seeding fireteams elsewhere
+        // cannot change these numbers depending on file execution order.
+        const response = await request.get(`/api/active-sessions?raid=${RAID_A.key}&limit=${API_LIMIT}`);
         expect(response.ok()).toBe(true);
 
         const body = await response.json() as { total: number; shown: number };
@@ -69,7 +71,9 @@ test.describe('active sessions', () => {
     test('counts in fireteams even when the cap is applied', async ({ request }) => {
         // Same request, stated as the invariant ADR 0001 exists to protect: the
         // total is never the raw row count, capped or not.
-        const response = await request.get(`/api/active-sessions?limit=${API_LIMIT}`);
+        // Scoped to this spec's raid so another spec seeding fireteams elsewhere
+        // cannot change these numbers depending on file execution order.
+        const response = await request.get(`/api/active-sessions?raid=${RAID_A.key}&limit=${API_LIMIT}`);
         const body = await response.json() as { total: number };
 
         expect(body.total).not.toBe(FIRETEAMS * MEMBERS_PER_FIRETEAM);
