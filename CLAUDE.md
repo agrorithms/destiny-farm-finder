@@ -24,7 +24,9 @@ For anything touching more than ~8 files, write a progress file listing each fil
 
 **Verification.**
 
-The `verify` skill (`.claude/skills/verify/SKILL.md`) is the build/launch/drive recipe — read it before verifying anything by hand. After a multi-file change run `npm run lint`, then `npm run build`, then `npm test`, and report the real output. Never report a change as working without it. Note that no headless browser is installed: if a change affects client-side request sequencing or rendering, say plainly that browser behavior is unverified rather than implying the server-side checks covered it.
+The `verify` skill (`.claude/skills/verify/SKILL.md`) is the build/launch/drive recipe — read it before verifying anything by hand. After a multi-file change run `npm run lint`, then `npm run build`, then `npm test`, and report the real output. Never report a change as working without it.
+
+Chromium **is** installed (Playwright). If a change affects client-side request sequencing or rendering, `npm run e2e` can actually verify it — but the browser suite covers only four flows today (leaderboard filtering, the active-session fireteam cap, `Name#Code` rendering, theme persistence). Outside those, browser behaviour is still unverified, and saying so plainly beats implying the server-side checks covered it. `docs/handoffs/260803-playwright-e2e.md` lists what is and isn't covered.
 
 **Environment.**
 
@@ -36,7 +38,8 @@ Port and build-lock hygiene is enforced by hooks in `.claude/hooks/` — a dev s
 
 - `npm run start` — **web app only.** The crawler/scanner/discovery are separate PM2 processes (`ecosystem.config.js`) and must be started independently.
 - `npm run setup-manifest` — writes `data/manifest-cache.json` for a human to read. Changes nothing about runtime behaviour; see the raid-detection convention below.
-- `npm run e2e:maintenance` — slow, spawns real crawler/scanner processes against a mock Bungie server. Deliberately outside `npm test` and CI.
+- `npm run e2e` — Playwright browser tests. Builds, then serves the app on **port 3100** against a throwaway seeded database. Not in `npm test`, not in CI. `npm run e2e:nobuild` skips the build for fast iteration and is wrong if `.next` is stale.
+- `npm run e2e:maintenance` — slow, spawns real crawler/scanner processes against a mock Bungie server. Deliberately outside `npm test` and CI. Unrelated to `npm run e2e` despite the name.
 
 Scripts run via `tsx` using `tsconfig.scripts.json`. Next.js app and scripts compile separately.
 
@@ -80,5 +83,7 @@ There is **no continuous replication.** Backups are manual snapshots: `npx tsx s
 Vitest. **`tests/README.md` is the how-to** — read it before writing or changing a test; it covers the two ground rules (mock `fetch` and only `fetch`; `npm test` stays hermetic), the layout, colocate-vs-`tests/`, fixtures-vs-builders, and the naming conventions. The rationale is in [ADR 0003](docs/adr/0003-tests-run-against-a-real-sqlite-file.md) and [ADR 0004](docs/adr/0004-mock-only-at-the-network-boundary.md); the build-out is in `docs/handoffs/testing-framework-handoff.md`. CI runs `npm test` only.
 
 **Never reorder `setupFiles` in `vitest.config.ts`** — `tests/setup/test-db-path.ts` must stay first or the suite binds to the live dev database and `resetTestDb()` deletes from it. `getDb()` enforces this; `tests/README.md` explains why.
+
+**Two runners, kept apart by file naming.** `.test.ts` is Vitest, `.spec.ts` under `e2e/` is Playwright. `tests/helpers/` is shared by both, so it must never import from `vitest` and must use relative imports rather than the `@/` alias — Playwright's loader doesn't apply tsconfig `paths` to `globalSetup`. The e2e suite points at its own throwaway database and proves it with a canary row checked through the running server before any spec runs; see [ADR 0003](docs/adr/0003-tests-run-against-a-real-sqlite-file.md).
 
 Application code was not changed to make anything testable — if a test seems to require that, question it first.

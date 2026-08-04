@@ -49,13 +49,50 @@ import being *dynamic* — a static `import` hoists above the assignment and doe
 nothing — so a routine tidy-up reverts it, silently, which is the property that made
 the original hazard dangerous in the first place.
 
+## Amendment (2026-08-03): the same approach, extended to the Playwright suite
+
+The browser suite (`e2e/`) uses the same mechanism — `mkdtemp`, one throwaway
+database per run, pointed at by `RAID_TRACKER_DB_PATH` — and seeds it through the
+same `tests/helpers/` that Vitest uses, so both runners agree on what a seeded
+raid run is.
+
+Two things had to change.
+
+**The guard now fires under `DFF_E2E` as well as `VITEST`.** Keying it on `VITEST`
+alone left it completely inert under Playwright, which is the environment that
+needs it *more*: two processes must receive the fixture path — the seeding process
+and the `next start` child — where Vitest has one.
+
+**A guard that is opt-in by env cannot fire if the env never arrives.** That is the
+gap `VITEST` did not have, because Vitest sets `VITEST` itself. Two further layers
+close it:
+
+1. `playwright.config.ts` throws at config load if `mintFixtureDbPath()` did not
+   set every expected variable. It is the sole entry point and the thing that
+   builds `webServer.env`, so nothing else can forget.
+2. `e2e/support/canary.setup.ts` seeds a row whose name carries a per-run nonce and
+   asks the *running server* for it through `/api/players/search` before any spec
+   executes. This is the only layer that observes which database the server
+   actually opened rather than reasoning about configuration. The nonce is what
+   makes it work: a server left over from an earlier run holds that run's canary,
+   so without it the check would pass while every spec read a stale database.
+   `reuseExistingServer: false` avoids that case rather than merely detecting it.
+
+`tests/setup/test-db-path.ts` could not be reused — it imports `afterAll` from
+`vitest` — so `e2e/support/fixture-db.ts` mints the path instead, using the same
+technique. It is idempotent because `playwright.config.ts` is re-loaded in every
+worker process, and a second mint would create a directory nothing else knows
+about.
+
 ## Consequences
 
 - Test databases cost a `mkdtemp` plus `initializeSchema()` per test file —
   roughly 5–15 ms on tmpfs. At this suite's size that is a few milliseconds
   overall, well below the value of matching production semantics.
 - Temp directories leak into the system temp dir if a test process is killed
-  before `afterAll` runs. Harmless, and the OS clears them.
+  before `afterAll` runs. Harmless, and the OS clears them. The e2e run leaves its
+  directory in place deliberately and prints the path, because the first question
+  after a browser-test failure is what was actually in the database.
 - A misconfigured suite fails on the first `getDb()` call with `Refusing to open …`
   rather than quietly using the real database. `tests/setup/test-db-path.test.ts`
   pins the invariant, including that `VITEST` is actually set — an inert guard is
