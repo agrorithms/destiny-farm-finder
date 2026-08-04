@@ -97,10 +97,12 @@ export default defineConfig({
             DFF_E2E: '1',
             DFF_E2E_RUN_ID: process.env.DFF_E2E_RUN_ID!,
 
-            // Server-side only, read at module load in active-session/dedupe.ts.
-            // Small enough that flow #2 can prove the cap with 8 seeded fireteams
-            // instead of 601.
-            ACTIVE_SESSION_DISPLAY_LIMIT: '5',
+            // ACTIVE_SESSION_DISPLAY_LIMIT is deliberately NOT overridden here.
+            // src/app/active-sessions/page.tsx requests `?limit=600` as a
+            // hardcoded literal, and the route 400s when limit exceeds the
+            // configured cap — so lowering it empties the page instead of
+            // trimming it. active-sessions-cap.spec.ts proves the cap through the
+            // API's own `limit` parameter instead. See the handoff.
 
             // Keeps e2e telemetry out of the production Sentry bucket. The DSN is
             // hardcoded in sentry.server.config.ts so it cannot be unset from
