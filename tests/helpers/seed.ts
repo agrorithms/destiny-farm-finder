@@ -1,9 +1,9 @@
-import { getDb } from '@/lib/db';
-import { insertFullPGCR, upsertPlayer } from '@/lib/db/queries';
-import { getRaidKeyFromHash } from '@/lib/bungie/manifest';
-import { processPGCR } from '@/lib/crawler/pgcr';
-import { readActivityDurationSeconds, readEntryStartSeconds } from '@/lib/bungie/pgcr-stats';
-import type { DestinyPostGameCarnageReportData } from '@/lib/bungie/types';
+import { getDb } from '../../src/lib/db';
+import { insertFullPGCR, upsertPlayer } from '../../src/lib/db/queries';
+import { getRaidKeyFromHash } from '../../src/lib/bungie/manifest';
+import { processPGCR } from '../../src/lib/crawler/pgcr';
+import { readActivityDurationSeconds, readEntryStartSeconds } from '../../src/lib/bungie/pgcr-stats';
+import type { DestinyPostGameCarnageReportData } from '../../src/lib/bungie/types';
 import { RAID_HASH } from './pgcr-builder';
 
 /**

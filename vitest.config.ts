@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 // Vitest over Jest: it runs TypeScript and ESM natively with no babel or ts-jest
 // layer, and it does not contend with Next.js 16's bundler. Nothing here is
@@ -14,6 +14,12 @@ export default defineConfig({
         // so they move with it; anything needing a database or fixtures lives
         // under tests/ where the helpers are.
         include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+
+        // Belt and braces. `include` above already excludes e2e/, but this is the
+        // line that survives someone later broadening it to '**/*.test.ts'.
+        // Playwright specs are `.spec.ts` under e2e/ and would fail here with an
+        // error that reads like a broken test rather than a misrouted file.
+        exclude: [...configDefaults.exclude, 'e2e/**'],
 
         // Order matters. test-db-path must run before anything imports the db
         // module, because DB_PATH is resolved at import time — see the file's
