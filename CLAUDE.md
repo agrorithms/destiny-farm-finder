@@ -87,3 +87,17 @@ Vitest. **`tests/README.md` is the how-to** — read it before writing or changi
 **Two runners, kept apart by file naming.** `.test.ts` is Vitest, `.spec.ts` under `e2e/` is Playwright. `tests/helpers/` is shared by both, so it must never import from `vitest` and must use relative imports rather than the `@/` alias — Playwright's loader doesn't apply tsconfig `paths` to `globalSetup`. The e2e suite points at its own throwaway database and proves it with a canary row checked through the running server before any spec runs; see [ADR 0003](docs/adr/0003-tests-run-against-a-real-sqlite-file.md).
 
 Application code was not changed to make anything testable — if a test seems to require that, question it first.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues on `agrorithms/destiny-public`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label vocabulary (labels match canonical role names). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
