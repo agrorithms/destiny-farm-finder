@@ -40,6 +40,9 @@ export interface SeedRunOptions {
     difficultyTier?: number;
     /** Count of distinct membership IDs across entries. */
     uniquePlayerCount?: number;
+    kills?: number;
+    deaths?: number;
+    assists?: number;
 }
 
 /** Unix seconds, `hours` in the past. Runs are seeded relative to now because
@@ -63,6 +66,9 @@ export function seedRun(options: SeedRunOptions): void {
         startSeconds = 0,
         difficultyTier,
         uniquePlayerCount,
+        kills: memberKills = 100,
+        deaths: memberDeaths = 2,
+        assists: memberAssists = 40,
     } = options;
 
     const members = [
@@ -97,9 +103,9 @@ export function seedRun(options: SeedRunOptions): void {
             characterClass: 'Warlock',
             lightLevel: 2010,
             completed: member.completed,
-            kills: 100,
-            deaths: 2,
-            assists: 40,
+            kills: memberKills,
+            deaths: memberDeaths,
+            assists: memberAssists,
             timePlayedSeconds,
             startSeconds,
         }))
