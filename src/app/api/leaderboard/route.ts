@@ -3,7 +3,7 @@ import { isDatabaseMaintenanceError } from '@/lib/db';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
 import { readLeaderboardSnapshot } from '@/lib/maintenance/snapshots';
 import { withCache, withNoStore } from '@/lib/http/cache';
-import { getLeaderboardResponse } from '@/lib/cache/leaderboard-cache';
+import { getLeaderboardResponse, type LeaderboardFilters } from '@/lib/cache/leaderboard-cache';
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
@@ -15,6 +15,27 @@ export async function GET(request: NextRequest) {
     const mode = searchParams.get('mode') === 'individual' ? 'individual' : 'aggregate';
     // fullClearsOnly is forced true on the cache path (the only real UI path);
     // it is folded into the cache key as a constant rather than read here.
+
+    const difficultyParam = searchParams.get('difficulty');
+    const exactPlayersParam = searchParams.get('exactPlayers');
+    const maxPlayersParam = searchParams.get('maxPlayers');
+
+    const filters: LeaderboardFilters = {};
+    if (difficultyParam === 'normal' || difficultyParam === 'master') {
+        filters.difficulty = difficultyParam;
+    }
+    if (exactPlayersParam) {
+        const parsed = parseInt(exactPlayersParam, 10);
+        if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 6) {
+            filters.exactPlayers = parsed;
+        }
+    } else if (maxPlayersParam) {
+        const parsed = parseInt(maxPlayersParam, 10);
+        if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 6) {
+            filters.maxPlayers = parsed;
+        }
+    }
+    const hasFilters = filters.difficulty || filters.exactPlayers != null || filters.maxPlayers != null;
 
     const allRaids = getAllRaidDefinitions();
     const raidKeys = raidsParam
@@ -36,7 +57,7 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const { body, state, band } = await getLeaderboardResponse({ mode, hours, raidKeys, limit });
+        const { body, state, band } = await getLeaderboardResponse({ mode, hours, raidKeys, limit, filters: hasFilters ? filters : undefined });
 
         const response = withCache(NextResponse.json(body), band.sMaxAge, band.staleWhileRevalidate);
         response.headers.set('X-Cache', state.toUpperCase());
