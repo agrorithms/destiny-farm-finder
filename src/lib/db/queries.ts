@@ -812,6 +812,101 @@ export function getPlayerRaidPerformanceStats(
   `).all(membershipId, cutoffTimestamp) as PlayerRaidPerformanceStats[];
 }
 
+export interface RaidStatsFilters {
+    difficulty?: 'normal' | 'master';
+    maxPlayers?: number;
+}
+
+export interface RaidStatsRow {
+    raidKey: string;
+    fastestClearSeconds: number | null;
+    dnfRate: number;
+    classDistribution: Record<string, number>;
+    avgKda: number | null;
+}
+
+export function getRaidStats(
+    hoursBack: number,
+    filters?: RaidStatsFilters
+): RaidStatsRow[] {
+    const db = getDb();
+    const cutoff = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+
+    let filterClause = '';
+    const filterParams: SqlValue[] = [];
+
+    if (filters?.difficulty === 'master') {
+        filterClause += ` AND p.difficulty_tier > 0`;
+    } else if (filters?.difficulty === 'normal') {
+        filterClause += ` AND COALESCE(p.difficulty_tier, -1) <= 0`;
+    }
+
+    if (filters?.maxPlayers != null) {
+        filterClause += ` AND p.unique_player_count IS NOT NULL AND p.unique_player_count <= ?`;
+        filterParams.push(filters.maxPlayers);
+    }
+
+    const scalarRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      MIN(CASE
+        WHEN p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END) as fastestClearSeconds,
+      ROUND(CAST(SUM(CASE WHEN p.completed = 0 THEN 1 ELSE 0 END) AS REAL)
+        / COUNT(*), 4) as dnfRate
+    FROM pgcrs p
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      ${filterClause}
+    GROUP BY p.raid_key
+  `).all(cutoff, ...filterParams) as { raidKey: string; fastestClearSeconds: number | null; dnfRate: number }[];
+
+    const kdaRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      ROUND(AVG(
+        CAST(pp.kills + pp.assists AS REAL) / MAX(pp.deaths, 1)
+      ), 2) as avgKda
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      AND p.completed = 1
+      AND p.activity_was_started_from_beginning = 1
+      ${filterClause}
+    GROUP BY p.raid_key
+  `).all(cutoff, ...filterParams) as { raidKey: string; avgKda: number | null }[];
+
+    const classRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      pp.character_class as characterClass,
+      COUNT(*) as count
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      ${filterClause}
+    GROUP BY p.raid_key, pp.character_class
+  `).all(cutoff, ...filterParams) as { raidKey: string; characterClass: string; count: number }[];
+
+    const kdaMap = new Map(kdaRows.map(r => [r.raidKey, r.avgKda]));
+    const classMap = new Map<string, Record<string, number>>();
+    for (const row of classRows) {
+        const existing = classMap.get(row.raidKey) ?? {};
+        existing[row.characterClass] = row.count;
+        classMap.set(row.raidKey, existing);
+    }
+
+    return scalarRows.map(row => ({
+        raidKey: row.raidKey,
+        fastestClearSeconds: row.fastestClearSeconds,
+        dnfRate: row.dnfRate,
+        classDistribution: classMap.get(row.raidKey) ?? {},
+        avgKda: kdaMap.get(row.raidKey) ?? null,
+    }));
+}
+
 /**
  * Count of distinct full raid clears in the last `hoursBack` hours. "Full clear" matches the
  * leaderboard definition (see runLeaderboardRows in src/lib/cache/leaderboard-cache.ts):
