@@ -36,6 +36,10 @@ export interface SeedRunOptions {
     activityDurationSeconds?: number | null;
     timePlayedSeconds?: number;
     startSeconds?: number | null;
+    /** Raw Bungie difficulty tier integer. */
+    difficultyTier?: number;
+    /** Count of distinct membership IDs across entries. */
+    uniquePlayerCount?: number;
 }
 
 /** Unix seconds, `hours` in the past. Runs are seeded relative to now because
@@ -57,6 +61,8 @@ export function seedRun(options: SeedRunOptions): void {
         activityDurationSeconds = 1800,
         timePlayedSeconds = 1800,
         startSeconds = 0,
+        difficultyTier,
+        uniquePlayerCount,
     } = options;
 
     const members = [
@@ -79,6 +85,8 @@ export function seedRun(options: SeedRunOptions): void {
             playerCount: members.length,
             source: 'test',
             activityDurationSeconds,
+            difficultyTier,
+            uniquePlayerCount,
         },
         members.map((member) => ({
             instanceId,
@@ -140,6 +148,8 @@ export function seedFromFixture(pgcr: DestinyPostGameCarnageReportData, source =
             playerCount: pgcr.entries.length,
             source,
             activityDurationSeconds: readActivityDurationSeconds(pgcr.entries),
+            difficultyTier: processed.difficultyTier,
+            uniquePlayerCount: processed.uniquePlayerCount,
         },
         pgcr.entries.map((entry) => ({
             instanceId: processed.instanceId,

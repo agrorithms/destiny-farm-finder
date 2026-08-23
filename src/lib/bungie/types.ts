@@ -83,6 +83,7 @@ export interface DestinyPostGameCarnageReportData {
     period: string;
     startingPhaseIndex: number;
     activityWasStartedFromBeginning: boolean;
+    activityDifficultyTier?: number;
     activityDetails: {
         referenceId: number;
         directorActivityHash: number;

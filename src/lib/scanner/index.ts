@@ -451,6 +451,10 @@ async function scanSinglePGCR(
                 startSeconds: readEntryStartSeconds(entry),
             }));
 
+            const uniquePlayerCount = new Set(
+                (pgcrData.entries || []).map((e) => e.player.destinyUserInfo.membershipId)
+            ).size;
+
             insertFullPGCR(
                 {
                     instanceId,
@@ -463,6 +467,8 @@ async function scanSinglePGCR(
                     playerCount: (pgcrData.entries || []).length,
                     source: 'scanner',
                     activityDurationSeconds: readActivityDurationSeconds(pgcrData.entries),
+                    difficultyTier: pgcrData.activityDifficultyTier,
+                    uniquePlayerCount,
                 },
                 playerEntries
             );

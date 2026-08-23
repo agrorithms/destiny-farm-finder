@@ -113,6 +113,8 @@ export interface PGCROptions {
      * number only when testing the legacy path.
      */
     startingPhaseIndex?: number | null;
+    /** Raw Bungie difficulty tier. Pass `null` to omit entirely (pre-migration rows). */
+    activityDifficultyTier?: number | null;
     entries?: DestinyPostGameCarnageReportEntry[];
 }
 
@@ -124,6 +126,7 @@ export function buildPGCR(options: PGCROptions = {}): DestinyPostGameCarnageRepo
         period = '2026-07-26T12:00:00Z',
         activityWasStartedFromBeginning = true,
         startingPhaseIndex = null,
+        activityDifficultyTier = null,
         entries = buildFireteam(),
     } = options;
 
@@ -142,6 +145,10 @@ export function buildPGCR(options: PGCROptions = {}): DestinyPostGameCarnageRepo
 
     if (startingPhaseIndex !== null) {
         pgcr.startingPhaseIndex = startingPhaseIndex;
+    }
+
+    if (activityDifficultyTier !== null) {
+        pgcr.activityDifficultyTier = activityDifficultyTier;
     }
 
     return pgcr;
