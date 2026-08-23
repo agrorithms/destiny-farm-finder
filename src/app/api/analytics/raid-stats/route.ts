@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isDatabaseMaintenanceError } from '@/lib/db';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
 import { envSeconds } from '@/lib/env';
-import { getRaidStats, type RaidStatsFilters } from '@/lib/db/queries';
+import { getRaidStats, type RaidFilters } from '@/lib/db/queries';
 import { getOrCompute } from '@/lib/cache/swr-cache';
 import { filterKeySuffix } from '@/lib/cache/leaderboard-cache';
 import { withCache, withNoStore } from '@/lib/http/cache';
@@ -19,19 +19,25 @@ export async function GET(request: NextRequest) {
     }
 
     const difficultyParam = searchParams.get('difficulty');
+    const exactPlayersParam = searchParams.get('exactPlayers');
     const maxPlayersParam = searchParams.get('maxPlayers');
 
-    const filters: RaidStatsFilters = {};
+    const filters: RaidFilters = {};
     if (difficultyParam === 'normal' || difficultyParam === 'master') {
         filters.difficulty = difficultyParam;
     }
-    if (maxPlayersParam) {
+    if (exactPlayersParam) {
+        const parsed = parseInt(exactPlayersParam, 10);
+        if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 6) {
+            filters.exactPlayers = parsed;
+        }
+    } else if (maxPlayersParam) {
         const parsed = parseInt(maxPlayersParam, 10);
         if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 6) {
             filters.maxPlayers = parsed;
         }
     }
-    const hasFilters = filters.difficulty || filters.maxPlayers != null;
+    const hasFilters = filters.difficulty || filters.exactPlayers != null || filters.maxPlayers != null;
 
     const freshSec = envSeconds('ANALYTICS_CACHE_FRESH_SEC', 300);
     const swrSec = envSeconds('ANALYTICS_CACHE_SWR_SEC', 1800);

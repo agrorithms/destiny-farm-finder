@@ -16,6 +16,7 @@
  * the raw leaderboard without the cache layer.
  */
 import { getDb } from '../db';
+import { buildRaidFilterClause, type RaidFilters } from '../db/queries';
 import { getAllRaidDefinitions } from '../bungie/manifest';
 import { envSeconds, envMs } from '../env';
 import { getOrCompute, type CacheState } from './swr-cache';
@@ -49,13 +50,6 @@ export interface IndividualLeaderboard {
 
 export type ResponseState = CacheState | 'bypass';
 
-export interface LeaderboardFilters {
-    difficulty?: 'normal' | 'master';
-    /** Exact unique_player_count match (Solo/Duo/Trio). */
-    exactPlayers?: number;
-    /** Upper-bound unique_player_count filter (Lowman ≤N). */
-    maxPlayers?: number;
-}
 
 export interface LeaderboardRequest {
     mode: 'aggregate' | 'individual';
@@ -63,7 +57,7 @@ export interface LeaderboardRequest {
     /** Validated raid keys as requested (may be empty = all raids). */
     raidKeys: string[];
     limit: number;
-    filters?: LeaderboardFilters;
+    filters?: RaidFilters;
 }
 
 export interface CacheBand {
@@ -139,7 +133,7 @@ function formatDisplayName(entry: LeaderboardDbRow): string {
  * a single key yields the same ranking as the per-raid individual query.
  * `fullClearsOnly` is always applied (forced true on every cached + bypass path).
  */
-export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number, filters?: LeaderboardFilters): LeaderboardResponseEntry[] {
+export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number, filters?: RaidFilters): LeaderboardResponseEntry[] {
     const db = getDb();
     const cutoff = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
 
@@ -168,19 +162,9 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
         params.push(...raidKeys);
     }
 
-    if (filters?.difficulty === 'master') {
-        query += ` AND p.difficulty_tier > 0`;
-    } else if (filters?.difficulty === 'normal') {
-        query += ` AND COALESCE(p.difficulty_tier, -1) <= 0`;
-    }
-
-    if (filters?.exactPlayers != null) {
-        query += ` AND p.unique_player_count = ?`;
-        params.push(filters.exactPlayers);
-    } else if (filters?.maxPlayers != null) {
-        query += ` AND p.unique_player_count IS NOT NULL AND p.unique_player_count <= ?`;
-        params.push(filters.maxPlayers);
-    }
+    const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
+    query += filterClause;
+    params.push(...filterParams);
 
     query += ` AND p.activity_was_started_from_beginning = 1`;
 
@@ -216,7 +200,7 @@ const yieldTick = (): Promise<void> => new Promise((resolve) => setImmediate(res
 
 /** Computes the 13-board individual payload, yielding between raids so the
  *  synchronous queries don't monopolize the event loop in one burst. */
-async function computeIndividualAll(hours: number, raidKeys: string[], filters?: LeaderboardFilters): Promise<Record<string, IndividualLeaderboard>> {
+async function computeIndividualAll(hours: number, raidKeys: string[], filters?: RaidFilters): Promise<Record<string, IndividualLeaderboard>> {
     const allRaids = getAllRaidDefinitions();
     const boards: Record<string, IndividualLeaderboard> = {};
     for (const raidKey of raidKeys) {
@@ -263,7 +247,7 @@ function isFullSet(sortedKeys: string[], allKeys: string[]): boolean {
     return sortedKeys.every((k) => all.has(k));
 }
 
-export function filterKeySuffix(filters?: LeaderboardFilters): string {
+export function filterKeySuffix(filters?: RaidFilters): string {
     if (!filters?.difficulty && filters?.exactPlayers == null && filters?.maxPlayers == null) return '';
     const parts: string[] = [];
     if (filters?.difficulty) parts.push(`d:${filters.difficulty}`);

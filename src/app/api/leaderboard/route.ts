@@ -3,7 +3,8 @@ import { isDatabaseMaintenanceError } from '@/lib/db';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
 import { readLeaderboardSnapshot } from '@/lib/maintenance/snapshots';
 import { withCache, withNoStore } from '@/lib/http/cache';
-import { getLeaderboardResponse, type LeaderboardFilters } from '@/lib/cache/leaderboard-cache';
+import { getLeaderboardResponse } from '@/lib/cache/leaderboard-cache';
+import type { RaidFilters } from '@/lib/db/queries';
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
     const exactPlayersParam = searchParams.get('exactPlayers');
     const maxPlayersParam = searchParams.get('maxPlayers');
 
-    const filters: LeaderboardFilters = {};
+    const filters: RaidFilters = {};
     if (difficultyParam === 'normal' || difficultyParam === 'master') {
         filters.difficulty = difficultyParam;
     }

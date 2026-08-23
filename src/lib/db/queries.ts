@@ -812,9 +812,31 @@ export function getPlayerRaidPerformanceStats(
   `).all(membershipId, cutoffTimestamp) as PlayerRaidPerformanceStats[];
 }
 
-export interface RaidStatsFilters {
+export interface RaidFilters {
     difficulty?: 'normal' | 'master';
+    exactPlayers?: number;
     maxPlayers?: number;
+}
+
+export function buildRaidFilterClause(filters?: RaidFilters): { clause: string; params: (string | number)[] } {
+    let clause = '';
+    const params: (string | number)[] = [];
+
+    if (filters?.difficulty === 'master') {
+        clause += ` AND p.difficulty_tier > 0`;
+    } else if (filters?.difficulty === 'normal') {
+        clause += ` AND COALESCE(p.difficulty_tier, -1) <= 0`;
+    }
+
+    if (filters?.exactPlayers != null) {
+        clause += ` AND p.unique_player_count = ?`;
+        params.push(filters.exactPlayers);
+    } else if (filters?.maxPlayers != null) {
+        clause += ` AND p.unique_player_count IS NOT NULL AND p.unique_player_count <= ?`;
+        params.push(filters.maxPlayers);
+    }
+
+    return { clause, params };
 }
 
 export interface RaidStatsRow {
@@ -827,24 +849,12 @@ export interface RaidStatsRow {
 
 export function getRaidStats(
     hoursBack: number,
-    filters?: RaidStatsFilters
+    filters?: RaidFilters
 ): RaidStatsRow[] {
     const db = getDb();
     const cutoff = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
 
-    let filterClause = '';
-    const filterParams: SqlValue[] = [];
-
-    if (filters?.difficulty === 'master') {
-        filterClause += ` AND p.difficulty_tier > 0`;
-    } else if (filters?.difficulty === 'normal') {
-        filterClause += ` AND COALESCE(p.difficulty_tier, -1) <= 0`;
-    }
-
-    if (filters?.maxPlayers != null) {
-        filterClause += ` AND p.unique_player_count IS NOT NULL AND p.unique_player_count <= ?`;
-        filterParams.push(filters.maxPlayers);
-    }
+    const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
 
     const scalarRows = db.prepare(`
     SELECT

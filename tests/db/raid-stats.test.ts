@@ -68,6 +68,16 @@ describe('getRaidStats', () => {
         expect(stats[0].classDistribution).toEqual({ Warlock: 2 });
     });
 
+    it('exactPlayers filters to exact unique_player_count match', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p2', 'p3'], uniquePlayerCount: 2 });
+        seedRun({ instanceId: '3', completedBy: ['p4', 'p5', 'p6'], uniquePlayerCount: 3 });
+
+        const stats = getRaidStats(24, { exactPlayers: 2 });
+        expect(stats).toHaveLength(1);
+        expect(stats[0].classDistribution).toEqual({ Warlock: 2 });
+    });
+
     it('maxPlayers filters by unique_player_count', () => {
         seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
         seedRun({ instanceId: '2', completedBy: ['p2', 'p3'], uniquePlayerCount: 2 });
