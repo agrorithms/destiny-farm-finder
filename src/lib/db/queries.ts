@@ -1270,6 +1270,28 @@ export function deleteSessionsContainingPlayer(membershipId: string): void {
 }
 
 // =====================
+// SESSION SNAPSHOT QUERIES
+// =====================
+
+export interface SessionSnapshotInput {
+    totalFireteams: number;
+    totalPlayers: number;
+    raidBreakdown: Record<string, { fireteams: number; players: number }>;
+}
+
+export function recordSessionSnapshot(input: SessionSnapshotInput): void {
+    const db = getDb();
+    db.prepare(`
+    INSERT INTO session_snapshots (timestamp, total_fireteams, total_players, raid_breakdown_json)
+    VALUES (unixepoch(), ?, ?, ?)
+  `).run(
+        input.totalFireteams,
+        input.totalPlayers,
+        JSON.stringify(input.raidBreakdown)
+    );
+}
+
+// =====================
 // CLEANUP QUERIES
 // =====================
 

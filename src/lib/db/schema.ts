@@ -74,6 +74,16 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_active_sessions_raid ON active_sessions(raid_key);
     CREATE INDEX IF NOT EXISTS idx_active_sessions_checked_at ON active_sessions(checked_at);
 
+    CREATE TABLE IF NOT EXISTS session_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      total_fireteams INTEGER NOT NULL,
+      total_players INTEGER NOT NULL,
+      raid_breakdown_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_snapshots_timestamp ON session_snapshots(timestamp);
+
     CREATE TABLE IF NOT EXISTS crawl_queue (
       membership_id   TEXT PRIMARY KEY,
       membership_type INTEGER NOT NULL,
