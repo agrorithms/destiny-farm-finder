@@ -19,17 +19,9 @@ import { RAID_A, RAID_B } from './support/seed-world';
 const RAID_A_PLAYER = 'FixtureAlpha#4242';
 const RAID_B_PLAYER = 'FixtureDelta#2222';
 
-/**
- * Opens the raid filter and picks one raid.
- *
- * The option is matched as a `span` because the page also renders each raid name
- * as an `h3` elsewhere, and an unqualified text match hits both. RaidMultiSelect
- * builds its options from plain divs with no listbox/option roles, so there is no
- * semantic locator to use instead.
- */
 async function selectRaid(page: Page, raidName: string): Promise<void> {
     await page.getByRole('button', { name: 'All Raids' }).click();
-    await page.getByText(raidName, { exact: true }).and(page.locator('span')).click();
+    await page.getByRole('option', { name: raidName }).click();
 }
 
 test.describe('leaderboard', () => {
