@@ -72,27 +72,44 @@ test.describe('leaderboard', () => {
     test('raid filter is keyboard-navigable', async ({ page }) => {
         await page.goto('/leaderboard');
 
-        const trigger = page.locator('button[aria-haspopup="listbox"]');
+        const trigger = page.getByRole('button', { name: 'All Raids' });
+        const listbox = page.getByRole('listbox');
         await trigger.focus();
 
-        // ArrowDown on the trigger opens the dropdown and focuses the first option.
-        await page.keyboard.press('ArrowDown');
+        // Enter on the trigger opens the dropdown (native button click).
+        await page.keyboard.press('Enter');
         await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-        const listbox = page.getByRole('listbox');
         await expect(listbox).toBeVisible();
 
-        // Arrow down to the second option, then select it with Space.
-        await page.keyboard.press('ArrowDown');
-        const secondOption = page.getByRole('option').nth(1);
-        const secondOptionId = await secondOption.getAttribute('id');
-        await expect(listbox).toHaveAttribute('aria-activedescendant', secondOptionId!);
-
-        await page.keyboard.press('Space');
-        await expect(secondOption).toHaveAttribute('aria-selected', 'true');
-
-        // Escape closes the dropdown and returns focus to the trigger.
+        // Escape closes it and returns focus to the trigger.
         await page.keyboard.press('Escape');
         await expect(listbox).not.toBeVisible();
         await expect(trigger).toBeFocused();
+
+        // ArrowDown on the trigger re-opens and focuses the listbox.
+        await page.keyboard.press('ArrowDown');
+        await expect(listbox).toBeVisible();
+
+        // Arrow down to the second option.
+        await page.keyboard.press('ArrowDown');
+        const secondOption = page.getByRole('option').nth(1);
+        const secondOptionId = await secondOption.getAttribute('id');
+        expect(secondOptionId).toBeTruthy();
+        await expect(listbox).toHaveAttribute('aria-activedescendant', secondOptionId!);
+
+        // Space toggles the focused option's selection.
+        await page.keyboard.press('Space');
+        await expect(secondOption).toHaveAttribute('aria-selected', 'true');
+
+        // Shift+Tab from the listbox reaches the utility buttons (Q8).
+        await page.keyboard.press('Shift+Tab');
+        await expect(page.getByRole('button', { name: 'Clear Filter' })).toBeFocused();
+        await expect(listbox).toBeVisible();
+
+        // Tab back to the listbox, then Tab past it to close the dropdown (Q9).
+        await page.keyboard.press('Tab');
+        await expect(listbox).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(listbox).not.toBeVisible();
     });
 });
