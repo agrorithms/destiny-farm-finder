@@ -68,4 +68,31 @@ test.describe('leaderboard', () => {
         await expect(page.getByRole('link', { name: RAID_B_PLAYER })).toBeVisible();
         await expect(page.getByRole('link', { name: RAID_A_PLAYER })).toHaveCount(0);
     });
+
+    test('raid filter is keyboard-navigable', async ({ page }) => {
+        await page.goto('/leaderboard');
+
+        const trigger = page.locator('button[aria-haspopup="listbox"]');
+        await trigger.focus();
+
+        // ArrowDown on the trigger opens the dropdown and focuses the first option.
+        await page.keyboard.press('ArrowDown');
+        await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+        const listbox = page.getByRole('listbox');
+        await expect(listbox).toBeVisible();
+
+        // Arrow down to the second option, then select it with Space.
+        await page.keyboard.press('ArrowDown');
+        const secondOption = page.getByRole('option').nth(1);
+        const secondOptionId = await secondOption.getAttribute('id');
+        await expect(listbox).toHaveAttribute('aria-activedescendant', secondOptionId!);
+
+        await page.keyboard.press('Space');
+        await expect(secondOption).toHaveAttribute('aria-selected', 'true');
+
+        // Escape closes the dropdown and returns focus to the trigger.
+        await page.keyboard.press('Escape');
+        await expect(listbox).not.toBeVisible();
+        await expect(trigger).toBeFocused();
+    });
 });
