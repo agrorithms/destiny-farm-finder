@@ -76,6 +76,9 @@ export function seedRun(options: SeedRunOptions): void {
             activityHash,
             raidKey,
             period,
+            // Always 0: Bungie reports startingPhaseIndex as 0 on every run, and the
+            // writer coerces it with `|| 0` anyway. Checkpoint runs are expressed through
+            // startedFromBeginning, which is what the leaderboards actually filter on.
             startingPhaseIndex: 0,
             activityWasStartedFromBeginning: startedFromBeginning,
             completed,

@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { DestinyPostGameCarnageReportData } from '@/lib/bungie/types';
 import { resetTestDb } from '../helpers/db';
-import { readPgcrRow, seedRun } from '../helpers/seed';
+import { readPgcrRow, seedFromFixture, seedRun } from '../helpers/seed';
+
+import multiCharacter from '../fixtures/pgcr-multi-character-garden.json';
+
+const as = (fixture: unknown) => fixture as DestinyPostGameCarnageReportData;
 
 /**
  * Verifies that `insertFullPGCR` persists the two new columns —
@@ -63,5 +68,27 @@ describe('unique_player_count persistence', () => {
 
         const row = readPgcrRow('1');
         expect(row?.unique_player_count).toBeNull();
+    });
+});
+
+describe('real fixture: multi-character Garden of Salvation', () => {
+    // The captured fixture has 6 entries from 2 unique players (one player
+    // ran 3 characters, the other ran 3). processPGCR should deduplicate
+    // by membershipId, and seedFromFixture should persist both new columns.
+
+    it('computes unique_player_count as 2 despite 6 entries', () => {
+        seedFromFixture(as(multiCharacter));
+
+        const instanceId = as(multiCharacter).activityDetails.instanceId;
+        const row = readPgcrRow(instanceId);
+        expect(row?.unique_player_count).toBe(2);
+    });
+
+    it('persists the fixture difficulty tier (-1)', () => {
+        seedFromFixture(as(multiCharacter));
+
+        const instanceId = as(multiCharacter).activityDetails.instanceId;
+        const row = readPgcrRow(instanceId);
+        expect(row?.difficulty_tier).toBe(-1);
     });
 });
