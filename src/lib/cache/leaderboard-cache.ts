@@ -17,6 +17,7 @@
  */
 import { getDb } from '../db';
 import { getAllRaidDefinitions } from '../bungie/manifest';
+import { envSeconds, envMs } from '../env';
 import { getOrCompute, type CacheState } from './swr-cache';
 
 type SqlParam = string | number;
@@ -89,20 +90,6 @@ const CACHED_LIMIT = 100;
 export const WARM_WINDOWS = [168, 720];
 
 // ── TTL bands ───────────────────────────────────────────────────────────────
-
-function envSeconds(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (!raw) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function envMs(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (!raw) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 /**
  * 4 bands by `hours`, named by upper bound. fresh = s-maxage, stale = SWR.
@@ -276,7 +263,7 @@ function isFullSet(sortedKeys: string[], allKeys: string[]): boolean {
     return sortedKeys.every((k) => all.has(k));
 }
 
-function filterKeySuffix(filters?: LeaderboardFilters): string {
+export function filterKeySuffix(filters?: LeaderboardFilters): string {
     if (!filters?.difficulty && filters?.exactPlayers == null && filters?.maxPlayers == null) return '';
     const parts: string[] = [];
     if (filters?.difficulty) parts.push(`d:${filters.difficulty}`);

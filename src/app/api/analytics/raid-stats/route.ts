@@ -1,16 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isDatabaseMaintenanceError } from '@/lib/db';
 import { getAllRaidDefinitions } from '@/lib/bungie/manifest';
+import { envSeconds } from '@/lib/env';
 import { getRaidStats, type RaidStatsFilters } from '@/lib/db/queries';
 import { getOrCompute } from '@/lib/cache/swr-cache';
+import { filterKeySuffix } from '@/lib/cache/leaderboard-cache';
 import { withCache, withNoStore } from '@/lib/http/cache';
-
-function envSeconds(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (!raw) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
@@ -41,11 +36,7 @@ export async function GET(request: NextRequest) {
     const freshSec = envSeconds('ANALYTICS_CACHE_FRESH_SEC', 300);
     const swrSec = envSeconds('ANALYTICS_CACHE_SWR_SEC', 1800);
 
-    let filterSuffix = '';
-    if (filters.difficulty) filterSuffix += `:d=${filters.difficulty}`;
-    if (filters.maxPlayers != null) filterSuffix += `:mp=${filters.maxPlayers}`;
-
-    const cacheKey = `raid-stats:${hours}${filterSuffix}`;
+    const cacheKey = `raid-stats:${hours}${filterKeySuffix(hasFilters ? filters : undefined)}`;
 
     try {
         const { value: rows, state } = await getOrCompute(

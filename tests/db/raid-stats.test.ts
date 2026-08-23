@@ -108,6 +108,27 @@ describe('getRaidStats', () => {
         expect(stats[0].dnfRate).toBe(0.5);
     });
 
+    it('groups stats independently per raid across multiple raids', () => {
+        const CROTAS_END_HASH = 1566480315;
+        // Salvation's Edge: fast clear (1200s), 0 DNF
+        seedRun({ instanceId: '1', completedBy: ['p1'], activityHash: SALVATIONS_EDGE_HASH, activityDurationSeconds: 1200, kills: 80, deaths: 10, assists: 30 });
+        // Crota's End: slower clear (3600s), 1 DNF out of 2
+        seedRun({ instanceId: '2', completedBy: ['p2'], activityHash: CROTAS_END_HASH, activityDurationSeconds: 3600, kills: 40, deaths: 5, assists: 10 });
+        seedRun({ instanceId: '3', incompleteBy: ['p3'], activityHash: CROTAS_END_HASH, completed: false });
+
+        const stats = getRaidStats(24);
+        expect(stats).toHaveLength(2);
+
+        const se = stats.find(s => s.raidKey === 'salvations_edge')!;
+        const ce = stats.find(s => s.raidKey === 'crotas_end')!;
+
+        expect(se.fastestClearSeconds).toBe(1200);
+        expect(se.dnfRate).toBe(0);
+
+        expect(ce.fastestClearSeconds).toBe(3600);
+        expect(ce.dnfRate).toBe(0.5);
+    });
+
     it('returns empty array when no raids match', () => {
         const stats = getRaidStats(24);
         expect(stats).toEqual([]);
