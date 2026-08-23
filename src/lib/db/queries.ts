@@ -738,6 +738,18 @@ export interface PlayerRaidCompletionSummary {
     avgCompletionSeconds: number | null;
 }
 
+export interface PlayerRaidPerformanceStats {
+    raidKey: string;
+    completions: number;
+    avgCompletionSeconds: number | null;
+    fastestClearSeconds: number | null;
+    dnfRate: number;
+    kills: number;
+    deaths: number;
+    assists: number;
+    kda: number;
+}
+
 export function getPlayerRaidCompletionSummary(
     membershipId: string,
     hoursBack: number
@@ -761,6 +773,43 @@ export function getPlayerRaidCompletionSummary(
     GROUP BY p.raid_key
     ORDER BY completions DESC, p.raid_key ASC
   `).all(membershipId, cutoffTimestamp) as PlayerRaidCompletionSummary[];
+}
+
+export function getPlayerRaidPerformanceStats(
+    membershipId: string,
+    hoursBack: number
+): PlayerRaidPerformanceStats[] {
+    const db = getDb();
+    const cutoffTimestamp = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+
+    return db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      COUNT(DISTINCT CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN pp.instance_id END) as completions,
+      CAST(ROUND(AVG(CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END)) AS INTEGER) as avgCompletionSeconds,
+      MIN(CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END) as fastestClearSeconds,
+      ROUND(CAST(SUM(CASE WHEN pp.completed = 0 THEN 1 ELSE 0 END) AS REAL)
+        / COUNT(*), 4) as dnfRate,
+      SUM(pp.kills) as kills,
+      SUM(pp.deaths) as deaths,
+      SUM(pp.assists) as assists,
+      ROUND(CAST(SUM(pp.kills) + SUM(pp.assists) AS REAL)
+        / MAX(SUM(pp.deaths), 1), 2) as kda
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE pp.membership_id = ?
+      AND p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+    GROUP BY p.raid_key
+    HAVING completions > 0
+    ORDER BY completions DESC, p.raid_key ASC
+  `).all(membershipId, cutoffTimestamp) as PlayerRaidPerformanceStats[];
 }
 
 /**
