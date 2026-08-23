@@ -1433,6 +1433,81 @@ export interface SessionSnapshotInput {
     raidBreakdown: Record<string, { fireteams: number; players: number }>;
 }
 
+export interface SessionHistoryPoint {
+    timestamp: number;
+    totalFireteams: number;
+    totalPlayers: number;
+    raidBreakdown: Record<string, { fireteams: number; players: number }>;
+}
+
+export function getSessionHistory(hoursBack: number, stepdownHours: number): SessionHistoryPoint[] {
+    const db = getDb();
+    const cutoff = Math.floor(Date.now() / 1000) - hoursBack * 3600;
+
+    const rows = db.prepare(`
+        SELECT timestamp, total_fireteams, total_players, raid_breakdown_json
+        FROM session_snapshots
+        WHERE timestamp >= ?
+        ORDER BY timestamp ASC
+    `).all(cutoff) as { timestamp: number; total_fireteams: number; total_players: number; raid_breakdown_json: string }[];
+
+    if (hoursBack <= stepdownHours) {
+        return rows.map(row => ({
+            timestamp: row.timestamp,
+            totalFireteams: row.total_fireteams,
+            totalPlayers: row.total_players,
+            raidBreakdown: JSON.parse(row.raid_breakdown_json) as Record<string, { fireteams: number; players: number }>,
+        }));
+    }
+
+    const buckets = new Map<number, typeof rows>();
+    for (const row of rows) {
+        const bucketKey = Math.floor(row.timestamp / 3600) * 3600;
+        const bucket = buckets.get(bucketKey) ?? [];
+        bucket.push(row);
+        buckets.set(bucketKey, bucket);
+    }
+
+    const result: SessionHistoryPoint[] = [];
+    for (const [bucketTimestamp, bucketRows] of buckets) {
+        const n = bucketRows.length;
+        const avgFireteams = Math.round(
+            bucketRows.reduce((s, r) => s + r.total_fireteams, 0) / n
+        );
+        const avgPlayers = Math.round(
+            bucketRows.reduce((s, r) => s + r.total_players, 0) / n
+        );
+
+        const raidSums = new Map<string, { fireteams: number; players: number }>();
+        for (const row of bucketRows) {
+            const breakdown = JSON.parse(row.raid_breakdown_json) as Record<string, { fireteams: number; players: number }>;
+            for (const [raidKey, vals] of Object.entries(breakdown)) {
+                const existing = raidSums.get(raidKey) ?? { fireteams: 0, players: 0 };
+                existing.fireteams += vals.fireteams;
+                existing.players += vals.players;
+                raidSums.set(raidKey, existing);
+            }
+        }
+
+        const avgBreakdown: Record<string, { fireteams: number; players: number }> = {};
+        for (const [raidKey, sums] of raidSums) {
+            avgBreakdown[raidKey] = {
+                fireteams: Math.round(sums.fireteams / n),
+                players: Math.round(sums.players / n),
+            };
+        }
+
+        result.push({
+            timestamp: bucketTimestamp,
+            totalFireteams: avgFireteams,
+            totalPlayers: avgPlayers,
+            raidBreakdown: avgBreakdown,
+        });
+    }
+
+    return result;
+}
+
 export function recordSessionSnapshot(input: SessionSnapshotInput): void {
     const db = getDb();
     db.prepare(`
