@@ -6,7 +6,7 @@ import LeaderboardTable from '@/components/LeaderboardTable';
 import TimeSlider, { formatTimeRange } from '@/components/TimeSlider';
 import { useRaidFilter } from '@/hooks/useRaidFilter';
 import { useReportPageLiveStatus } from '@/hooks/usePageLiveStatus';
-import { useViewMode, useTimeRange, useLeaderboardSize, useDifficultyFilter, usePlayersFilter, type DifficultyFilter, type PlayersFilter } from '@/hooks/useLeaderboardPrefs';
+import { useViewMode, useTimeRange, useLeaderboardSize, usePlayersFilter, type PlayersFilter } from '@/hooks/useLeaderboardPrefs';
 
 interface RaidOption {
     key: string;
@@ -78,7 +78,6 @@ export default function LeaderboardPage() {
     const [hours, setHours] = useTimeRange();
     const [mode, setMode] = useViewMode();
     const [leaderboardSize, setLeaderboardSize] = useLeaderboardSize();
-    const [difficulty, setDifficulty] = useDifficultyFilter();
     const [playersFilter, setPlayersFilter] = usePlayersFilter();
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState<LeaderboardResponse | null>(null);
@@ -168,9 +167,6 @@ export default function LeaderboardPage() {
             if (selectedRaids.length > 0) {
                 params.set('raids', selectedRaids.join(','));
             }
-            if (difficulty) {
-                params.set('difficulty', difficulty);
-            }
             if (playersFilter === 'lowman') {
                 params.set('maxPlayers', '3');
             } else if (playersFilter) {
@@ -188,7 +184,7 @@ export default function LeaderboardPage() {
             if (requestId !== requestIdRef.current) {
                 return;
             }
-            const comboKey = `${hours}|${mode}|${leaderboardSize}|${selectedRaids.join(',')}|${difficulty}|${playersFilter}`;
+            const comboKey = `${hours}|${mode}|${leaderboardSize}|${selectedRaids.join(',')}|${playersFilter}`;
             setData(annotateMovement(result, comboKey, requestId));
             setLastUpdated(new Date());
         } catch (err) {
@@ -204,7 +200,7 @@ export default function LeaderboardPage() {
                 setLoading(false);
             }
         }
-    }, [selectedRaids, hours, mode, leaderboardSize, difficulty, playersFilter, annotateMovement]);
+    }, [selectedRaids, hours, mode, leaderboardSize, playersFilter, annotateMovement]);
 
     useEffect(() => {
         return () => activeControllerRef.current?.abort();
@@ -285,20 +281,6 @@ export default function LeaderboardPage() {
                         </div>
                     </div>
 
-                    {/* Difficulty Filter */}
-                    <div>
-                        <label className="block text-xs ui-text-muted mb-1">Difficulty</label>
-                        <select
-                            value={difficulty}
-                            onChange={(e) => setDifficulty(e.target.value as DifficultyFilter)}
-                            className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 ui-toggle-idle"
-                        >
-                            <option value="">All</option>
-                            <option value="normal">Normal</option>
-                            <option value="master">Master</option>
-                        </select>
-                    </div>
-
                     {/* Players Filter */}
                     <div>
                         <label className="block text-xs ui-text-muted mb-1">Players</label>
@@ -311,7 +293,7 @@ export default function LeaderboardPage() {
                             <option value="1">Solo</option>
                             <option value="2">Duo</option>
                             <option value="3">Trio</option>
-                            <option value="lowman">Lowman (≤3)</option>
+                            <option value="lowman">Any Lowman</option>
                         </select>
                     </div>
 
