@@ -185,6 +185,20 @@ export function initializeSchema(db: Database.Database): void {
         // Column already exists.
     }
 
+    // Migration guards for difficulty tier and unique player count on pgcrs.
+    // difficulty_tier: raw Bungie activityDifficultyTier integer. NULL for pre-migration rows.
+    // unique_player_count: distinct membershipIds across PGCR entries, computed at insert time.
+    try {
+        db.prepare(`ALTER TABLE pgcrs ADD COLUMN difficulty_tier INTEGER`).run();
+    } catch {
+        // Column already exists.
+    }
+    try {
+        db.prepare(`ALTER TABLE pgcrs ADD COLUMN unique_player_count INTEGER`).run();
+    } catch {
+        // Column already exists.
+    }
+
     // Phase 3 indexes for the ended_at reader cutover. Created here (after the
     // ended_at column exists) so fresh/dev DBs get them automatically; on the
     // large prod DB they are pre-built in an ingestion-paused window via

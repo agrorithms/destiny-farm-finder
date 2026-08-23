@@ -983,6 +983,8 @@ export interface InsertFullPGCRData {
     source?: string;
     /** Bungie activity-level duration (seconds); Tier 1 input for ended_at. */
     activityDurationSeconds?: number | null;
+    difficultyTier?: number;
+    uniquePlayerCount?: number;
 }
 
 export interface InsertFullPGCRPlayer {
@@ -1046,8 +1048,9 @@ function getInsertFullPGCRTransaction(): (pgcrData: InsertFullPGCRData, players:
         insertPGCRStmt = db.prepare(`
     INSERT OR IGNORE INTO pgcrs
     (instance_id, activity_hash, raid_key, period, starting_phase_index,
-     activity_was_started_from_beginning, completed, player_count, source, ended_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     activity_was_started_from_beginning, completed, player_count, source, ended_at,
+     difficulty_tier, unique_player_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id) DO NOTHING
   `) as unknown as RunnableStatement;
 
@@ -1092,7 +1095,9 @@ function getInsertFullPGCRTransaction(): (pgcrData: InsertFullPGCRData, players:
                 pgcrData.completed ? 1 : 0,
                 pgcrData.playerCount,
                 pgcrData.source || 'unknown',
-                endedAt
+                endedAt,
+                pgcrData.difficultyTier ?? null,
+                pgcrData.uniquePlayerCount ?? null
             );
 
             for (const player of players) {
