@@ -115,6 +115,61 @@ describe('period conversion', () => {
     });
 });
 
+describe('difficulty tier extraction', () => {
+    it('carries through -1 (implicitly Normal)', () => {
+        const pgcr = buildPGCR({ activityDifficultyTier: -1 });
+
+        expect(processPGCR(pgcr).difficultyTier).toBe(-1);
+    });
+
+    it('carries through 0 (explicitly Normal)', () => {
+        const pgcr = buildPGCR({ activityDifficultyTier: 0 });
+
+        expect(processPGCR(pgcr).difficultyTier).toBe(0);
+    });
+
+    it('carries through a higher tier value (Master)', () => {
+        const pgcr = buildPGCR({ activityDifficultyTier: 9 });
+
+        expect(processPGCR(pgcr).difficultyTier).toBe(9);
+    });
+
+    it('is undefined when the field is absent', () => {
+        const pgcr = buildPGCR();
+
+        expect(processPGCR(pgcr).difficultyTier).toBeUndefined();
+    });
+});
+
+describe('unique player count', () => {
+    it('counts distinct membership IDs, not entries', () => {
+        // Two players, three entries: player 1 has two characters (same membershipId).
+        const entries = [
+            buildEntry({ membershipId: 'player-1', displayName: 'P1-Warlock' }),
+            buildEntry({ membershipId: 'player-1', displayName: 'P1-Hunter' }),
+            buildEntry({ membershipId: 'player-2', displayName: 'P2' }),
+        ];
+
+        expect(processPGCR(buildPGCR({ entries })).uniquePlayerCount).toBe(2);
+    });
+
+    it('equals entry count when every entry is a different player', () => {
+        const entries = buildFireteam({ size: 6 });
+
+        expect(processPGCR(buildPGCR({ entries })).uniquePlayerCount).toBe(6);
+    });
+
+    it('is zero for an empty PGCR', () => {
+        expect(processPGCR(buildPGCR({ entries: [] })).uniquePlayerCount).toBe(0);
+    });
+
+    it('handles a solo player correctly', () => {
+        const entries = [buildEntry({ membershipId: 'solo-player' })];
+
+        expect(processPGCR(buildPGCR({ entries })).uniquePlayerCount).toBe(1);
+    });
+});
+
 describe('player extraction', () => {
     it('keeps one record per entry', () => {
         const pgcr = buildPGCR({ entries: buildFireteam({ size: 6 }) });

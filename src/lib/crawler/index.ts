@@ -8,6 +8,7 @@ import {
     deleteCrawlQueueRows,
     getPlayersInRecentBucket,
     getPlayersInColdBucket,
+    recordSessionSnapshot,
 } from '../db/queries';
 import { crawlPlayer } from './players';
 import { pollActiveSessions, resolveUnknownPartyMembers, collectPartyMemberIds } from './active-sessions';
@@ -455,15 +456,25 @@ export async function startCrawler(overrides?: Partial<CrawlerConfig>): Promise<
                 staleReverifyLimit: config.activeSessionStaleReverifyLimit,
             });
 
-            // Log summary by raid
-            const byRaid = new Map<string, number>();
+            // Log summary by raid and record a snapshot for the session history endpoint.
+            const raidBreakdown: Record<string, { fireteams: number; players: number }> = {};
+            const raidNames = new Map<string, string>();
             for (const session of sessions) {
-                const count = byRaid.get(session.raidName) || 0;
-                byRaid.set(session.raidName, count + 1);
+                const entry = raidBreakdown[session.raidKey] ?? { fireteams: 0, players: 0 };
+                entry.fireteams += 1;
+                entry.players += session.playerCount;
+                raidBreakdown[session.raidKey] = entry;
+                raidNames.set(session.raidKey, session.raidName);
             }
-            for (const [raid, count] of byRaid) {
-                console.log(`  🎮 ${raid}: ${count} active sessions`);
+            for (const [raidKey, counts] of Object.entries(raidBreakdown)) {
+                console.log(`  🎮 ${raidNames.get(raidKey) ?? raidKey}: ${counts.fireteams} fireteams, ${counts.players} players`);
             }
+
+            recordSessionSnapshot({
+                totalFireteams: sessions.length,
+                totalPlayers: sessions.reduce((sum, s) => sum + s.playerCount, 0),
+                raidBreakdown,
+            });
 
             // Resolve fireteam members not yet in the players table so their cards show
             // Name#Code instead of a raw membership id (capped per cycle).

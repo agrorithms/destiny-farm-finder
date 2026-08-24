@@ -16,7 +16,9 @@
  * the raw leaderboard without the cache layer.
  */
 import { getDb } from '../db';
+import { buildRaidFilterClause, type RaidFilters } from '../db/queries';
 import { getAllRaidDefinitions } from '../bungie/manifest';
+import { envSeconds, envMs } from '../env';
 import { getOrCompute, type CacheState } from './swr-cache';
 
 type SqlParam = string | number;
@@ -48,12 +50,14 @@ export interface IndividualLeaderboard {
 
 export type ResponseState = CacheState | 'bypass';
 
+
 export interface LeaderboardRequest {
     mode: 'aggregate' | 'individual';
     hours: number;
     /** Validated raid keys as requested (may be empty = all raids). */
     raidKeys: string[];
     limit: number;
+    filters?: RaidFilters;
 }
 
 export interface CacheBand {
@@ -80,20 +84,6 @@ const CACHED_LIMIT = 100;
 export const WARM_WINDOWS = [168, 720];
 
 // ── TTL bands ───────────────────────────────────────────────────────────────
-
-function envSeconds(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (!raw) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function envMs(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (!raw) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 /**
  * 4 bands by `hours`, named by upper bound. fresh = s-maxage, stale = SWR.
@@ -143,7 +133,7 @@ function formatDisplayName(entry: LeaderboardDbRow): string {
  * a single key yields the same ranking as the per-raid individual query.
  * `fullClearsOnly` is always applied (forced true on every cached + bypass path).
  */
-export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number): LeaderboardResponseEntry[] {
+export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number, filters?: RaidFilters): LeaderboardResponseEntry[] {
     const db = getDb();
     const cutoff = Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000);
 
@@ -171,6 +161,10 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
         query += ` AND p.raid_key IN (${placeholders})`;
         params.push(...raidKeys);
     }
+
+    const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
+    query += filterClause;
+    params.push(...filterParams);
 
     query += ` AND p.activity_was_started_from_beginning = 1`;
 
@@ -206,14 +200,14 @@ const yieldTick = (): Promise<void> => new Promise((resolve) => setImmediate(res
 
 /** Computes the 13-board individual payload, yielding between raids so the
  *  synchronous queries don't monopolize the event loop in one burst. */
-async function computeIndividualAll(hours: number, raidKeys: string[]): Promise<Record<string, IndividualLeaderboard>> {
+async function computeIndividualAll(hours: number, raidKeys: string[], filters?: RaidFilters): Promise<Record<string, IndividualLeaderboard>> {
     const allRaids = getAllRaidDefinitions();
     const boards: Record<string, IndividualLeaderboard> = {};
     for (const raidKey of raidKeys) {
         boards[raidKey] = {
             raidKey,
             raidName: allRaids[raidKey]?.name || raidKey,
-            entries: runLeaderboardRows(hours, [raidKey], CACHED_LIMIT),
+            entries: runLeaderboardRows(hours, [raidKey], CACHED_LIMIT, filters),
         };
         await yieldTick();
     }
@@ -253,6 +247,15 @@ function isFullSet(sortedKeys: string[], allKeys: string[]): boolean {
     return sortedKeys.every((k) => all.has(k));
 }
 
+export function filterKeySuffix(filters?: RaidFilters): string {
+    if (!filters?.difficulty && filters?.exactPlayers == null && filters?.maxPlayers == null) return '';
+    const parts: string[] = [];
+    if (filters?.difficulty) parts.push(`d:${filters.difficulty}`);
+    if (filters?.exactPlayers != null) parts.push(`ep:${filters.exactPlayers}`);
+    if (filters?.maxPlayers != null) parts.push(`mp:${filters.maxPlayers}`);
+    return `|${parts.join('|')}`;
+}
+
 /**
  * Resolve a request to a response body + cache state. Canonical shapes
  * (aggregate-all, individual-all, single-raid) are memoized via the SWR cache;
@@ -267,13 +270,14 @@ export async function getLeaderboardResponse(req: LeaderboardRequest): Promise<L
     const sortedSelected = [...req.raidKeys].sort();
     const isAll = sortedSelected.length === 0 || isFullSet(sortedSelected, allKeys);
     const cacheLimit = Math.min(req.limit, CACHED_LIMIT);
+    const fSuffix = filterKeySuffix(req.filters);
 
     // Single raid — ranking is mode-agnostic; cache once, wrap per request mode.
     if (!isAll && sortedSelected.length === 1) {
         const raidKey = sortedSelected[0];
-        const key = `single|${req.hours}|${raidKey}|fc1`;
+        const key = `single|${req.hours}|${raidKey}|fc1${fSuffix}`;
         const { value, state } = await getOrCompute(key, swr, () =>
-            runLeaderboardRows(req.hours, [raidKey], CACHED_LIMIT),
+            runLeaderboardRows(req.hours, [raidKey], CACHED_LIMIT, req.filters),
         );
         const entries = value.slice(0, cacheLimit);
         const body = req.mode === 'individual'
@@ -287,15 +291,15 @@ export async function getLeaderboardResponse(req: LeaderboardRequest): Promise<L
     // All raids — distinct computations per mode (cannot derive one from the other).
     if (isAll) {
         if (req.mode === 'individual') {
-            const key = `individual|${req.hours}||fc1`;
+            const key = `individual|${req.hours}||fc1${fSuffix}`;
             const { value, state } = await getOrCompute(key, swr, () =>
-                computeIndividualAll(req.hours, allKeys),
+                computeIndividualAll(req.hours, allKeys, req.filters),
             );
             return { body: individualBody(req.hours, allKeys, sliceBoards(value, cacheLimit)), state, band };
         }
-        const key = `aggregate|${req.hours}||fc1`;
+        const key = `aggregate|${req.hours}||fc1${fSuffix}`;
         const { value, state } = await getOrCompute(key, swr, () =>
-            runLeaderboardRows(req.hours, [], CACHED_LIMIT),
+            runLeaderboardRows(req.hours, [], CACHED_LIMIT, req.filters),
         );
         return { body: aggregateBody(req.hours, allKeys, value.slice(0, cacheLimit)), state, band };
     }
@@ -307,12 +311,12 @@ export async function getLeaderboardResponse(req: LeaderboardRequest): Promise<L
             boards[raidKey] = {
                 raidKey,
                 raidName: allRaids[raidKey]?.name || raidKey,
-                entries: runLeaderboardRows(req.hours, [raidKey], req.limit),
+                entries: runLeaderboardRows(req.hours, [raidKey], req.limit, req.filters),
             };
         }
         return { body: individualBody(req.hours, req.raidKeys, boards), state: 'bypass', band };
     }
 
-    const entries = runLeaderboardRows(req.hours, req.raidKeys, req.limit);
+    const entries = runLeaderboardRows(req.hours, req.raidKeys, req.limit, req.filters);
     return { body: aggregateBody(req.hours, req.raidKeys, entries), state: 'bypass', band };
 }

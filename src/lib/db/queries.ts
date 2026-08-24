@@ -738,6 +738,18 @@ export interface PlayerRaidCompletionSummary {
     avgCompletionSeconds: number | null;
 }
 
+export interface PlayerRaidPerformanceStats {
+    raidKey: string;
+    completions: number;
+    avgCompletionSeconds: number | null;
+    fastestClearSeconds: number | null;
+    dnfRate: number;
+    kills: number;
+    deaths: number;
+    assists: number;
+    kda: number;
+}
+
 export function getPlayerRaidCompletionSummary(
     membershipId: string,
     hoursBack: number
@@ -761,6 +773,148 @@ export function getPlayerRaidCompletionSummary(
     GROUP BY p.raid_key
     ORDER BY completions DESC, p.raid_key ASC
   `).all(membershipId, cutoffTimestamp) as PlayerRaidCompletionSummary[];
+}
+
+export function getPlayerRaidPerformanceStats(
+    membershipId: string,
+    hoursBack: number
+): PlayerRaidPerformanceStats[] {
+    const db = getDb();
+    const cutoffTimestamp = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+
+    return db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      COUNT(DISTINCT CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN pp.instance_id END) as completions,
+      CAST(ROUND(AVG(CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END)) AS INTEGER) as avgCompletionSeconds,
+      MIN(CASE
+        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END) as fastestClearSeconds,
+      ROUND(CAST(SUM(CASE WHEN pp.completed = 0 THEN 1 ELSE 0 END) AS REAL)
+        / COUNT(*), 4) as dnfRate,
+      SUM(pp.kills) as kills,
+      SUM(pp.deaths) as deaths,
+      SUM(pp.assists) as assists,
+      ROUND(CAST(SUM(pp.kills) + SUM(pp.assists) AS REAL)
+        / MAX(SUM(pp.deaths), 1), 2) as kda
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE pp.membership_id = ?
+      AND p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+    GROUP BY p.raid_key
+    HAVING completions > 0
+    ORDER BY completions DESC, p.raid_key ASC
+  `).all(membershipId, cutoffTimestamp) as PlayerRaidPerformanceStats[];
+}
+
+export interface RaidFilters {
+    difficulty?: 'normal' | 'master';
+    exactPlayers?: number;
+    maxPlayers?: number;
+}
+
+export function buildRaidFilterClause(filters?: RaidFilters): { clause: string; params: (string | number)[] } {
+    let clause = '';
+    const params: (string | number)[] = [];
+
+    if (filters?.difficulty === 'master') {
+        clause += ` AND p.difficulty_tier > 0`;
+    } else if (filters?.difficulty === 'normal') {
+        clause += ` AND COALESCE(p.difficulty_tier, -1) <= 0`;
+    }
+
+    if (filters?.exactPlayers != null) {
+        clause += ` AND p.unique_player_count = ?`;
+        params.push(filters.exactPlayers);
+    } else if (filters?.maxPlayers != null) {
+        clause += ` AND p.unique_player_count IS NOT NULL AND p.unique_player_count <= ?`;
+        params.push(filters.maxPlayers);
+    }
+
+    return { clause, params };
+}
+
+export interface RaidStatsRow {
+    raidKey: string;
+    fastestClearSeconds: number | null;
+    dnfRate: number;
+    classDistribution: Record<string, number>;
+    avgKda: number | null;
+}
+
+export function getRaidStats(
+    hoursBack: number,
+    filters?: RaidFilters
+): RaidStatsRow[] {
+    const db = getDb();
+    const cutoff = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000);
+
+    const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
+
+    const scalarRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      MIN(CASE
+        WHEN p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        THEN p.ended_at - p.period END) as fastestClearSeconds,
+      ROUND(CAST(SUM(CASE WHEN p.completed = 0 THEN 1 ELSE 0 END) AS REAL)
+        / COUNT(*), 4) as dnfRate
+    FROM pgcrs p
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      ${filterClause}
+    GROUP BY p.raid_key
+  `).all(cutoff, ...filterParams) as { raidKey: string; fastestClearSeconds: number | null; dnfRate: number }[];
+
+    const kdaRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      ROUND(AVG(
+        CAST(pp.kills + pp.assists AS REAL) / MAX(pp.deaths, 1)
+      ), 2) as avgKda
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      AND p.completed = 1
+      AND p.activity_was_started_from_beginning = 1
+      ${filterClause}
+    GROUP BY p.raid_key
+  `).all(cutoff, ...filterParams) as { raidKey: string; avgKda: number | null }[];
+
+    const classRows = db.prepare(`
+    SELECT
+      p.raid_key as raidKey,
+      pp.character_class as characterClass,
+      COUNT(*) as count
+    FROM pgcr_players pp
+    JOIN pgcrs p ON pp.instance_id = p.instance_id
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      ${filterClause}
+    GROUP BY p.raid_key, pp.character_class
+  `).all(cutoff, ...filterParams) as { raidKey: string; characterClass: string; count: number }[];
+
+    const kdaMap = new Map(kdaRows.map(r => [r.raidKey, r.avgKda]));
+    const classMap = new Map<string, Record<string, number>>();
+    for (const row of classRows) {
+        const existing = classMap.get(row.raidKey) ?? {};
+        existing[row.characterClass] = row.count;
+        classMap.set(row.raidKey, existing);
+    }
+
+    return scalarRows.map(row => ({
+        raidKey: row.raidKey,
+        fastestClearSeconds: row.fastestClearSeconds,
+        dnfRate: row.dnfRate,
+        classDistribution: classMap.get(row.raidKey) ?? {},
+        avgKda: kdaMap.get(row.raidKey) ?? null,
+    }));
 }
 
 /**
@@ -983,6 +1137,8 @@ export interface InsertFullPGCRData {
     source?: string;
     /** Bungie activity-level duration (seconds); Tier 1 input for ended_at. */
     activityDurationSeconds?: number | null;
+    difficultyTier?: number;
+    uniquePlayerCount?: number;
 }
 
 export interface InsertFullPGCRPlayer {
@@ -1046,8 +1202,9 @@ function getInsertFullPGCRTransaction(): (pgcrData: InsertFullPGCRData, players:
         insertPGCRStmt = db.prepare(`
     INSERT OR IGNORE INTO pgcrs
     (instance_id, activity_hash, raid_key, period, starting_phase_index,
-     activity_was_started_from_beginning, completed, player_count, source, ended_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     activity_was_started_from_beginning, completed, player_count, source, ended_at,
+     difficulty_tier, unique_player_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(instance_id) DO NOTHING
   `) as unknown as RunnableStatement;
 
@@ -1092,7 +1249,9 @@ function getInsertFullPGCRTransaction(): (pgcrData: InsertFullPGCRData, players:
                 pgcrData.completed ? 1 : 0,
                 pgcrData.playerCount,
                 pgcrData.source || 'unknown',
-                endedAt
+                endedAt,
+                pgcrData.difficultyTier ?? null,
+                pgcrData.uniquePlayerCount ?? null
             );
 
             for (const player of players) {
@@ -1262,6 +1421,103 @@ export function deleteSessionsContainingPlayer(membershipId: string): void {
     WHERE membership_id = ?
        OR party_members_json LIKE ?
   `).run(membershipId, likePattern);
+}
+
+// =====================
+// SESSION SNAPSHOT QUERIES
+// =====================
+
+export interface SessionSnapshotInput {
+    totalFireteams: number;
+    totalPlayers: number;
+    raidBreakdown: Record<string, { fireteams: number; players: number }>;
+}
+
+export interface SessionHistoryPoint {
+    timestamp: number;
+    totalFireteams: number;
+    totalPlayers: number;
+    raidBreakdown: Record<string, { fireteams: number; players: number }>;
+}
+
+export function getSessionHistory(hoursBack: number, stepdownHours: number): SessionHistoryPoint[] {
+    const db = getDb();
+    const cutoff = Math.floor(Date.now() / 1000) - hoursBack * 3600;
+
+    const rows = db.prepare(`
+        SELECT timestamp, total_fireteams, total_players, raid_breakdown_json
+        FROM session_snapshots
+        WHERE timestamp >= ?
+        ORDER BY timestamp ASC
+    `).all(cutoff) as { timestamp: number; total_fireteams: number; total_players: number; raid_breakdown_json: string }[];
+
+    if (hoursBack <= stepdownHours) {
+        return rows.map(row => ({
+            timestamp: row.timestamp,
+            totalFireteams: row.total_fireteams,
+            totalPlayers: row.total_players,
+            raidBreakdown: JSON.parse(row.raid_breakdown_json) as Record<string, { fireteams: number; players: number }>,
+        }));
+    }
+
+    const buckets = new Map<number, typeof rows>();
+    for (const row of rows) {
+        const bucketKey = Math.floor(row.timestamp / 3600) * 3600;
+        const bucket = buckets.get(bucketKey) ?? [];
+        bucket.push(row);
+        buckets.set(bucketKey, bucket);
+    }
+
+    const result: SessionHistoryPoint[] = [];
+    for (const [bucketTimestamp, bucketRows] of buckets) {
+        const n = bucketRows.length;
+        const avgFireteams = Math.round(
+            bucketRows.reduce((s, r) => s + r.total_fireteams, 0) / n
+        );
+        const avgPlayers = Math.round(
+            bucketRows.reduce((s, r) => s + r.total_players, 0) / n
+        );
+
+        const raidSums = new Map<string, { fireteams: number; players: number }>();
+        for (const row of bucketRows) {
+            const breakdown = JSON.parse(row.raid_breakdown_json) as Record<string, { fireteams: number; players: number }>;
+            for (const [raidKey, vals] of Object.entries(breakdown)) {
+                const existing = raidSums.get(raidKey) ?? { fireteams: 0, players: 0 };
+                existing.fireteams += vals.fireteams;
+                existing.players += vals.players;
+                raidSums.set(raidKey, existing);
+            }
+        }
+
+        const avgBreakdown: Record<string, { fireteams: number; players: number }> = {};
+        for (const [raidKey, sums] of raidSums) {
+            avgBreakdown[raidKey] = {
+                fireteams: Math.round(sums.fireteams / n),
+                players: Math.round(sums.players / n),
+            };
+        }
+
+        result.push({
+            timestamp: bucketTimestamp,
+            totalFireteams: avgFireteams,
+            totalPlayers: avgPlayers,
+            raidBreakdown: avgBreakdown,
+        });
+    }
+
+    return result;
+}
+
+export function recordSessionSnapshot(input: SessionSnapshotInput): void {
+    const db = getDb();
+    db.prepare(`
+    INSERT INTO session_snapshots (timestamp, total_fireteams, total_players, raid_breakdown_json)
+    VALUES (unixepoch(), ?, ?, ?)
+  `).run(
+        input.totalFireteams,
+        input.totalPlayers,
+        JSON.stringify(input.raidBreakdown)
+    );
 }
 
 // =====================

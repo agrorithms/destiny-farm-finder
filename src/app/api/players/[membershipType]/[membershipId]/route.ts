@@ -4,7 +4,7 @@ import { isDatabaseMaintenanceError } from '@/lib/db';
 import {
     formatBungieDisplayName,
     getPlayerIdentity,
-    getPlayerRaidCompletionSummary,
+    getPlayerRaidPerformanceStats,
     getPlayerRaidTeammateSummary,
     getPlayerRecentCompletions,
     getActiveSessionContainingPlayer,
@@ -135,7 +135,7 @@ export async function GET(
             }));
         }
 
-        const summary = getPlayerRaidCompletionSummary(membershipId, hours);
+        const summary = getPlayerRaidPerformanceStats(membershipId, hours);
         const recentCompletions = getPlayerRecentCompletions(membershipId, hours, 500);
         const teammates = getPlayerRaidTeammateSummary(membershipId, hours);
         const activeSession = getActiveSessionForPlayer(membershipId, 600);
@@ -149,6 +149,12 @@ export async function GET(
                 raidName: raids[row.raidKey]?.name || row.raidKey,
                 completions: row.completions,
                 avgCompletionSeconds: row.avgCompletionSeconds,
+                fastestClearSeconds: row.fastestClearSeconds,
+                dnfRate: row.dnfRate,
+                kills: row.kills,
+                deaths: row.deaths,
+                assists: row.assists,
+                kda: row.kda,
             })),
             recentCompletions: recentCompletions.map((row) => ({
                 instanceId: row.instanceId,

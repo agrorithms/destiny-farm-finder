@@ -24,6 +24,14 @@ interface ActiveSession {
     partyMembers: PartyMember[];
 }
 
+interface ApiResponse {
+    sessions: ActiveSession[];
+    total: number;
+    shown: number;
+    maintenance?: boolean;
+    message?: string;
+}
+
 interface RaidOption {
     key: string;
     name: string;
@@ -49,20 +57,27 @@ export default function ActiveSessionsPage() {
     const [sessions, setSessions] = useState<ActiveSession[]>([]);
     const [selectedRaids, setSelectedRaids] = useRaidFilter();
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [total, setTotal] = useState(0);
+    const [shown, setShown] = useState(0);
     const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
     const [maintenanceMessage, setMaintenanceMessage] = useState<string | null>(null);
 
     const fetchSessions = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/active-sessions?limit=600');
+            const response = await fetch('/api/active-sessions');
             if (!response.ok) throw new Error(`API error: ${response.status}`);
-            const data = await response.json();
+            const data: ApiResponse = await response.json();
             setSessions(data.sessions || []);
+            setTotal(data.total ?? 0);
+            setShown(data.shown ?? 0);
             setMaintenanceMessage(data.maintenance ? data.message || 'Database maintenance is in progress.' : null);
+            setError(null);
             setLastUpdated(new Date());
-        } catch (error) {
-            console.error('Failed to fetch active sessions:', error);
+        } catch (err) {
+            console.error('Failed to fetch active sessions:', err);
+            setError('Could not load active sessions.');
         } finally {
             setLoading(false);
         }
@@ -113,6 +128,12 @@ export default function ActiveSessionsPage() {
                 </div>
             )}
 
+            {error && !loading && (
+                <div className="ui-card p-4 mb-6 text-sm text-red-700 dark:text-red-400">
+                    {error}
+                </div>
+            )}
+
             {/* Controls Card */}
             <div className="ui-card p-4 mb-6">
                 <div className="flex flex-wrap items-end gap-4">
@@ -137,6 +158,12 @@ export default function ActiveSessionsPage() {
                 </div>
             </div>
 
+            {total > shown && !loading && (
+                <p className="text-sm ui-text-muted mb-4">
+                    Showing {shown} of {total} active fireteams
+                </p>
+            )}
+
             {/* Loading State */}
             {loading && sessions.length === 0 && (
                 <div className="space-y-4">
@@ -147,7 +174,7 @@ export default function ActiveSessionsPage() {
             )}
 
             {/* Empty State */}
-            {!loading && filteredSessions.length === 0 && !maintenanceMessage && (
+            {!loading && !error && filteredSessions.length === 0 && !maintenanceMessage && (
                 <div className="ui-card p-4">
                     <div className="text-center py-12 ui-text-secondary">
                         <p className="text-lg">No active raid sessions found</p>

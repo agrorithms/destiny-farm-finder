@@ -31,5 +31,6 @@ export function resetTestDb(): void {
         DELETE FROM players;
         DELETE FROM active_sessions;
         DELETE FROM crawler_state;
+        DELETE FROM session_snapshots;
     `);
 }

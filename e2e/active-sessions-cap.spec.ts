@@ -11,12 +11,7 @@ import { RAID_A, seedFireteams } from './support/seed-world';
  * when the cap trims what is rendered.
  *
  * The denomination is proved through the page (8 fireteams / 48 rows -> 8 cards)
- * and the cap through the API's own `limit` parameter. Lowering
- * ACTIVE_SESSION_DISPLAY_LIMIT for the server would have been the tidier way to
- * make the cap bite on the page, but src/app/active-sessions/page.tsx requests
- * `?limit=600` as a hardcoded literal and the route rejects a limit above the
- * configured cap — so lowering it empties the page rather than trimming it.
- * Pinning that would pin a bug.
+ * and the cap through the API's own `limit` parameter.
  */
 
 const FIRETEAMS = 8;
@@ -84,5 +79,15 @@ test.describe('active sessions', () => {
 
         await expect(page.getByRole('heading', { level: 2, name: RAID_A.name })).toBeVisible();
         await expect(page.getByText(`${FIRETEAMS} sessions`)).toBeVisible();
+    });
+
+    test('shows an error message when the API fails, not the empty state', async ({ page }) => {
+        await page.route('**/api/active-sessions*', (route) =>
+            route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"test"}' })
+        );
+        await page.goto('/active-sessions');
+
+        await expect(page.getByText('Could not load active sessions')).toBeVisible();
+        await expect(page.getByText('No active raid sessions found')).not.toBeVisible();
     });
 });

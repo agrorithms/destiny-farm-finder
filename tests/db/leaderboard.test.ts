@@ -232,6 +232,136 @@ describe('display names', () => {
     });
 });
 
+describe('difficulty filtering', () => {
+    it('master filter returns only runs with difficulty_tier > 0', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 0 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], difficultyTier: -1 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { difficulty: 'master' });
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].completions).toBe(1);
+    });
+
+    it('normal filter includes difficulty_tier <= 0 and NULL', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 0 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], difficultyTier: -1 });
+        seedRun({ instanceId: '4', completedBy: ['p1'] });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { difficulty: 'normal' });
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].completions).toBe(3);
+    });
+
+    it('no filter includes all regardless of difficulty_tier', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 0 });
+        seedRun({ instanceId: '3', completedBy: ['p1'] });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10);
+
+        expect(rows[0].completions).toBe(3);
+    });
+});
+
+describe('exactPlayers filtering', () => {
+    it('exactPlayers=1 returns only solo completions', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], uniquePlayerCount: 3 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { exactPlayers: 1 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+
+    it('exactPlayers=3 returns only trios, not solos or duos', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], uniquePlayerCount: 2 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], uniquePlayerCount: 3 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { exactPlayers: 3 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+
+    it('excludes rows with NULL unique_player_count', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'] });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { exactPlayers: 1 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+});
+
+describe('maxPlayers filtering (lowman)', () => {
+    it('maxPlayers=3 returns solos, duos, and trios', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], uniquePlayerCount: 2 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], uniquePlayerCount: 3 });
+        seedRun({ instanceId: '4', completedBy: ['p1'], uniquePlayerCount: 6 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { maxPlayers: 3 });
+
+        expect(rows[0].completions).toBe(3);
+    });
+
+    it('excludes rows with NULL unique_player_count', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'] });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { maxPlayers: 3 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+
+    it('no filter includes all regardless of unique_player_count', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], uniquePlayerCount: 6 });
+        seedRun({ instanceId: '3', completedBy: ['p1'] });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10);
+
+        expect(rows[0].completions).toBe(3);
+    });
+});
+
+describe('combined filters', () => {
+    it('difficulty + exactPlayers compose correctly', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 2 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 6 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], difficultyTier: 0, uniquePlayerCount: 2 });
+        seedRun({ instanceId: '4', completedBy: ['p1'], difficultyTier: 0, uniquePlayerCount: 6 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { difficulty: 'master', exactPlayers: 2 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+
+    it('difficulty + maxPlayers (lowman) compose correctly', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 1 });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 3 });
+        seedRun({ instanceId: '3', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 6 });
+        seedRun({ instanceId: '4', completedBy: ['p1'], difficultyTier: 0, uniquePlayerCount: 2 });
+
+        const rows = runLeaderboardRows(HOURS_BACK, [], 10, { difficulty: 'master', maxPlayers: 3 });
+
+        expect(rows[0].completions).toBe(2);
+    });
+
+    it('difficulty + exactPlayers + raid filter compose correctly', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 2, activityHash: SALVATIONS_EDGE });
+        seedRun({ instanceId: '2', completedBy: ['p1'], difficultyTier: 2, uniquePlayerCount: 2, activityHash: CROTAS_END });
+
+        const rows = runLeaderboardRows(HOURS_BACK, ['salvations_edge'], 10, { difficulty: 'master', exactPlayers: 2 });
+
+        expect(rows[0].completions).toBe(1);
+    });
+});
+
 function hoursBeforeNow(hours: number): number {
     return Math.floor(Date.now() / 1000) - Math.round(hours * 3600);
 }

@@ -16,6 +16,8 @@ export interface ProcessedPGCR {
     period: number;
     isFullClear: boolean;
     completed: boolean;
+    difficultyTier: number | undefined;
+    uniquePlayerCount: number;
     players: PlayerInfo[];
 }
 
@@ -48,6 +50,10 @@ export function processPGCR(pgcr: DestinyPostGameCarnageReportData): ProcessedPG
         bungieGlobalDisplayNameCode: entry.player.destinyUserInfo.bungieGlobalDisplayNameCode,
     }));
 
+    const uniquePlayerCount = new Set(pgcr.entries.map(
+        (entry) => entry.player.destinyUserInfo.membershipId
+    )).size;
+
     return {
         instanceId: pgcr.activityDetails.instanceId,
         activityHash,
@@ -55,6 +61,8 @@ export function processPGCR(pgcr: DestinyPostGameCarnageReportData): ProcessedPG
         period: isoToUnix(pgcr.period),
         isFullClear,
         completed: anyoneCompleted,
+        difficultyTier: pgcr.activityDifficultyTier,
+        uniquePlayerCount,
         players,
     };
 }
@@ -113,6 +121,8 @@ export async function fetchAndStorePGCR(instanceId: string, callSource: string):
                 playerCount: pgcrData.entries.length,
                 source: callSource,
                 activityDurationSeconds: readActivityDurationSeconds(pgcrData.entries),
+                difficultyTier: processed.difficultyTier,
+                uniquePlayerCount: processed.uniquePlayerCount,
             },
             playerEntries
         );
