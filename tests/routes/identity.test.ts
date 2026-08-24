@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { resetTestDb } from '../../../../../tests/helpers/db';
-import { buildWriteRequest } from '../../../../../tests/helpers/build-write-request';
+import { resetTestDb } from '../helpers/db';
+import { buildWriteRequest } from '../helpers/build-write-request';
 
 const SECRET = 'test-secret-not-a-real-credential';
 const T0 = new Date('2026-08-03T12:00:00Z').getTime();
@@ -29,7 +29,7 @@ function validBody(membershipId = '4611686018488107374') {
 
 describe('POST /api/players/identity', () => {
     it('returns 403 when the request is not trusted (cross-origin)', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const request = buildWriteRequest('/api/players/identity', validBody(), {
             origin: 'https://evil.example.com',
         });
@@ -40,7 +40,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('returns 400 for an invalid membershipId', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const request = buildWriteRequest('/api/players/identity', {
             ...validBody(),
             membershipId: 'not-a-number',
@@ -52,7 +52,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('returns 400 for an invalid membershipType', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const request = buildWriteRequest('/api/players/identity', {
             ...validBody(),
             membershipType: 99,
@@ -64,7 +64,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('returns 400 when bungieGlobalDisplayName is missing', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const body = {
             membershipId: '4611686018488107374',
             membershipType: 3,
@@ -78,7 +78,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('stores a new player identity and returns stored: true', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const id = '4611686018488100001';
         const request = buildWriteRequest('/api/players/identity', validBody(id));
         const response = await POST(request);
@@ -88,7 +88,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('returns stored: false with reason recently_updated on cooldown', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const id = '4611686018488100002';
         const first = buildWriteRequest('/api/players/identity', validBody(id));
         await POST(first);
@@ -101,7 +101,7 @@ describe('POST /api/players/identity', () => {
     });
 
     it('returns 503 when the database is in maintenance', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/identity/route');
         const id = '4611686018488100003';
 
         // Pragmatic ADR 0004 exception: fault injection on the DB function to

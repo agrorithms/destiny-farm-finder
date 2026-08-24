@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { resetTestDb, testDb } from '../../../../../tests/helpers/db';
-import { buildWriteRequest } from '../../../../../tests/helpers/build-write-request';
+import { resetTestDb, testDb } from '../helpers/db';
+import { buildWriteRequest } from '../helpers/build-write-request';
 
 const SECRET = 'test-secret-not-a-real-credential';
 const T0 = new Date('2026-08-03T12:00:00Z').getTime();
@@ -28,7 +28,7 @@ function validBody(membershipId = '4611686018488200001') {
 
 describe('POST /api/players/queue-crawl', () => {
     it('returns 403 when the request is not trusted', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const request = buildWriteRequest('/api/players/queue-crawl', validBody(), {
             origin: 'https://evil.example.com',
         });
@@ -39,7 +39,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns 400 for an invalid membershipId', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const request = buildWriteRequest('/api/players/queue-crawl', {
             ...validBody(),
             membershipId: 'abc',
@@ -51,7 +51,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns 400 for an invalid membershipType', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const request = buildWriteRequest('/api/players/queue-crawl', {
             ...validBody(),
             membershipType: 42,
@@ -63,7 +63,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns 429 when the per-IP rate limit is exceeded', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const ip = '10.0.0.1';
         // FixedWindowLimiter: 10 per 60s per IP. Each call needs a unique
         // membership ID so the per-player CooldownGate doesn't fire first.
@@ -81,7 +81,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns queued: false with reason recently_refreshed on cooldown', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const id = '4611686018488200002';
         const ip = '10.0.0.2';
         await POST(buildWriteRequest('/api/players/queue-crawl', validBody(id), { ip }));
@@ -95,7 +95,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns queued: false with reason backing_off when the player is backing off', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const id = '4611686018488200003';
         const ip = '10.0.0.3';
 
@@ -114,7 +114,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('enqueues the player and returns 202 on the happy path', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const id = '4611686018488200004';
         const ip = '10.0.0.4';
         const response = await POST(
@@ -126,7 +126,7 @@ describe('POST /api/players/queue-crawl', () => {
     });
 
     it('returns 503 when the database is in maintenance', async () => {
-        const { POST } = await import('./route');
+        const { POST } = await import('@/app/api/players/queue-crawl/route');
         const id = '4611686018488200005';
         const ip = '10.0.0.5';
 
