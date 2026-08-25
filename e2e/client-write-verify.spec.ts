@@ -1,8 +1,8 @@
-import type { Page } from '@playwright/test';
 import { expect, test } from './support/test-fixtures';
 import { RAID_A, seedPlayerWithSession } from './support/seed-world';
 import { seedPlayer } from '../tests/helpers/seed';
-import { buildActiveProfile } from '../tests/helpers/bungie-profile-builder';
+import { bungieEnvelope, buildActiveProfile } from '../tests/helpers/bungie-profile-builder';
+import { callIndex, interceptApiCalls, type NetworkEntry } from './support/network-log';
 
 /**
  * Browser-level proof that mintPageToken() survives the RSC boundary into a real
@@ -12,8 +12,8 @@ import { buildActiveProfile } from '../tests/helpers/bungie-profile-builder';
  *   Scenario 1 — Happy path: active session, no unresolved roster members.
  *   Scenario 3 — Private account: Bungie returns error code 1665 (privacy).
  *
- * Scenarios 2 and 4 (unresolved-members enrichment, provisional fireteam
- * resolution) are covered by #64.
+ * Scenario 2 (unresolved-members enrichment) lives in client-write-resolve.spec.ts;
+ * scenario 4 (provisional fireteam resolution) is deferred.
  *
  * Bungie stubs use builder-generated fixtures from tests/helpers/bungie-profile-builder.ts
  * (presets from #62), replacing the empty placeholder in test-fixtures.ts for these tests.
@@ -31,24 +31,6 @@ const HAPPY_CODE = 8301;
 const PRIVATE_ID = '4611686018488300002';
 const PRIVATE_NAME = 'PrivateGuardian83';
 const PRIVATE_CODE = 8302;
-
-interface NetworkEntry {
-    method: string;
-    path: string;
-    hasPageToken: boolean;
-}
-
-async function interceptApiCalls(page: Page, log: NetworkEntry[]): Promise<void> {
-    await page.route('**/api/players/**', async (route) => {
-        const url = new URL(route.request().url());
-        log.push({
-            method: route.request().method(),
-            path: url.pathname + url.search,
-            hasPageToken: 'x-page-token' in route.request().headers(),
-        });
-        await route.continue();
-    });
-}
 
 test.beforeAll(() => {
     seedPlayer(HAPPY_ID, HAPPY_NAME, HAPPY_CODE);
@@ -81,13 +63,7 @@ test.describe('client-write verify', () => {
             await route.fulfill({
                 status: 200,
                 contentType: 'application/json',
-                body: JSON.stringify({
-                    ErrorCode: 1,
-                    ErrorStatus: 'Success',
-                    Message: 'Ok',
-                    ThrottleSeconds: 0,
-                    Response: profile,
-                }),
+                body: JSON.stringify(bungieEnvelope(profile)),
             });
         });
 
@@ -111,24 +87,22 @@ test.describe('client-write verify', () => {
 
         // --- Network ordering assertions ---
 
-        const posts = log.filter((e) => e.method === 'POST');
-        const updatePost = posts.find((e) => e.path.includes('active-session-update'));
-        const crawlPost = posts.find((e) => e.path.includes('queue-crawl'));
-        const identityPost = posts.find((e) => e.path.includes('/identity'));
+        const updateIndex = callIndex(log, 'POST', 'active-session-update');
+        const crawlIndex = callIndex(log, 'POST', 'queue-crawl');
 
         // active-session-update fired with page token.
-        expect(updatePost).toBeDefined();
-        expect(updatePost!.hasPageToken).toBe(true);
+        expect(updateIndex).toBeGreaterThanOrEqual(0);
+        expect(log[updateIndex].hasPageToken).toBe(true);
 
         // queue-crawl fired with page token.
-        expect(crawlPost).toBeDefined();
-        expect(crawlPost!.hasPageToken).toBe(true);
+        expect(crawlIndex).toBeGreaterThanOrEqual(0);
+        expect(log[crawlIndex].hasPageToken).toBe(true);
 
         // active-session-update before queue-crawl.
-        expect(posts.indexOf(updatePost!)).toBeLessThan(posts.indexOf(crawlPost!));
+        expect(updateIndex).toBeLessThan(crawlIndex);
 
         // No identity POST — no unresolved roster members.
-        expect(identityPost).toBeUndefined();
+        expect(callIndex(log, 'POST', '/api/players/identity')).toBe(-1);
 
         // Baseline GET fired.
         expect(log.some((e) => e.method === 'GET' && e.path.includes('part=active'))).toBe(true);
@@ -143,13 +117,11 @@ test.describe('client-write verify', () => {
             await route.fulfill({
                 status: 200,
                 contentType: 'application/json',
-                body: JSON.stringify({
+                body: JSON.stringify(bungieEnvelope({}, {
                     ErrorCode: 1665,
                     ErrorStatus: 'DestinyPrivacyRestriction',
                     Message: 'No peeking.',
-                    ThrottleSeconds: 0,
-                    Response: {},
-                }),
+                })),
             });
         });
 
@@ -174,10 +146,9 @@ test.describe('client-write verify', () => {
         expect(log.some((e) => e.method === 'GET' && e.path.includes('containing=1'))).toBe(true);
 
         // No POST to active-session-update — Bungie call failed before the POST.
-        const posts = log.filter((e) => e.method === 'POST');
-        expect(posts.some((e) => e.path.includes('active-session-update'))).toBe(false);
+        expect(callIndex(log, 'POST', 'active-session-update')).toBe(-1);
 
         // No POST to queue-crawl — queueCrawlOnce skipped because accountPrivate.
-        expect(posts.some((e) => e.path.includes('queue-crawl'))).toBe(false);
+        expect(callIndex(log, 'POST', 'queue-crawl')).toBe(-1);
     });
 });

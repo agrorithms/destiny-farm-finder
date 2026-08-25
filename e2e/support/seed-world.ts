@@ -114,16 +114,33 @@ export interface SeedPlayerSessionOptions {
     name: string;
     code: number;
     raid?: typeof RAID_A | typeof RAID_B;
+    /**
+     * Extra roster members, beyond the player themselves. Deliberately takes raw
+     * membership ids and nothing else: this mirrors what Bungie's transitory
+     * component actually sends for a teammate we have never seen, which is the
+     * state the resolve flow exists to repair. Members named here are NOT seeded
+     * into `players` — a spec that wants them known must seed them itself.
+     */
+    extraMembers?: string[];
 }
 
 /**
- * Seeds a single player with a solo active session. Like seedFireteams but for
- * one specific player — used when a spec needs a known membership ID rather
- * than a generated one.
+ * Seeds a single player with an active session. Like seedFireteams but for one
+ * specific player — used when a spec needs a known membership ID rather than a
+ * generated one.
  */
 export function seedPlayerWithSession(options: SeedPlayerSessionOptions): void {
-    const { membershipId, name, code, raid = RAID_A } = options;
+    const { membershipId, name, code, raid = RAID_A, extraMembers = [] } = options;
     seedPlayer(membershipId, name, code);
+
+    const partyMembers = [
+        { membershipId, displayName: name, status: 1 },
+        // displayName === membershipId is what Bungie sends when it has no name
+        // for a party member, and is what makes enrichPartyMembersFromJson fall
+        // through to the raw id rather than to an "api name".
+        ...extraMembers.map((id) => ({ membershipId: id, displayName: id, status: 1 })),
+    ];
+
     upsertActiveSession({
         membershipId,
         membershipType: 3,
@@ -132,10 +149,8 @@ export function seedPlayerWithSession(options: SeedPlayerSessionOptions): void {
         activityModeType: 4,
         raidKey: raid.key,
         startedAt: new Date(hoursAgo(0.5) * 1000).toISOString(),
-        partyMembersJson: JSON.stringify([
-            { membershipId, displayName: name, status: 1 },
-        ]),
-        playerCount: 1,
+        partyMembersJson: JSON.stringify(partyMembers),
+        playerCount: partyMembers.length,
     });
 }
 
