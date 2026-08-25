@@ -109,6 +109,36 @@ export function seedStaticWorld(): void {
     }
 }
 
+export interface SeedPlayerSessionOptions {
+    membershipId: string;
+    name: string;
+    code: number;
+    raid?: typeof RAID_A | typeof RAID_B;
+}
+
+/**
+ * Seeds a single player with a solo active session. Like seedFireteams but for
+ * one specific player — used when a spec needs a known membership ID rather
+ * than a generated one.
+ */
+export function seedPlayerWithSession(options: SeedPlayerSessionOptions): void {
+    const { membershipId, name, code, raid = RAID_A } = options;
+    seedPlayer(membershipId, name, code);
+    upsertActiveSession({
+        membershipId,
+        membershipType: 3,
+        displayName: name,
+        activityHash: raid.hash,
+        activityModeType: 4,
+        raidKey: raid.key,
+        startedAt: new Date(hoursAgo(0.5) * 1000).toISOString(),
+        partyMembersJson: JSON.stringify([
+            { membershipId, displayName: name, status: 1 },
+        ]),
+        playerCount: 1,
+    });
+}
+
 export interface SeedFireteamsOptions {
     /** How many distinct fireteams to create. */
     count: number;
