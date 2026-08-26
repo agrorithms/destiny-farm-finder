@@ -28,6 +28,16 @@ function isTelemetry(hostname: string): boolean {
     return hostname.endsWith('.sentry.io') || hostname.endsWith('umami.is');
 }
 
+/**
+ * External assets loaded by application pages (e.g. third-party favicons on the
+ * player profile page). Fulfilled with a 200 so the browser does not report a
+ * failed resource load, but the content is empty — the test does not care about
+ * rendering these images.
+ */
+function isExternalAsset(hostname: string): boolean {
+    return hostname === 'raid.report' || hostname === 'raidhub.io';
+}
+
 function isBungie(hostname: string): boolean {
     return hostname === 'bungie.net' || hostname.endsWith('.bungie.net');
 }
@@ -63,12 +73,17 @@ export const test = base.extend<{ blockExternalRequests: void }>({
                     return;
                 }
 
+                if (isExternalAsset(hostname)) {
+                    await route.fulfill({ status: 200, contentType: 'image/x-icon', body: '' });
+                    return;
+                }
+
                 if (isBungie(hostname)) {
-                    // Stubbed, not aborted: the baseline specs make no browser →
-                    // Bungie calls, but the profile-page flows that will land here
-                    // later do, and they should get a fixture rather than a network
-                    // error. ErrorCode 1 is Bungie's "Success" envelope, the shape
-                    // src/lib/bungie/client-api.ts parses.
+                    // Fallback stub: specs that make browser → Bungie calls register
+                    // per-test page.route handlers with builder-generated fixtures
+                    // (see client-write-verify.spec.ts), which override this for
+                    // their specific endpoints. This success envelope remains the
+                    // default for any Bungie request that no per-test handler claims.
                     await route.fulfill({
                         status: 200,
                         contentType: 'application/json',
