@@ -1,8 +1,9 @@
 import { expect, test } from './support/test-fixtures';
 import { RAID_A, seedPlayerWithSession } from './support/seed-world';
 import { seedPlayer } from '../tests/helpers/seed';
-import { bungieEnvelope, buildActiveProfile } from '../tests/helpers/bungie-profile-builder';
-import { callIndex, interceptApiCalls, type NetworkEntry } from './support/network-log';
+import { buildActiveProfile } from '../tests/helpers/bungie-profile-builder';
+import { callIndex, interceptApiCalls, waitForQueueCrawl } from './support/network-log';
+import { fulfillBungie } from './support/bungie-stub';
 
 /**
  * Browser-level proof that mintPageToken() survives the RSC boundary into a real
@@ -44,8 +45,7 @@ test.beforeAll(() => {
 
 test.describe('client-write verify', () => {
     test('happy path: Bungie profile → active-session-update → session card → queue-crawl', async ({ page }) => {
-        const log: NetworkEntry[] = [];
-        await interceptApiCalls(page, log);
+        const log = interceptApiCalls(page);
 
         // Stub Bungie GetProfile with a builder-generated active profile.
         const profile = buildActiveProfile({
@@ -59,20 +59,11 @@ test.describe('client-write verify', () => {
             ],
         });
 
-        await page.route('**/Platform/Destiny2/**', async (route) => {
-            await route.fulfill({
-                status: 200,
-                contentType: 'application/json',
-                body: JSON.stringify(bungieEnvelope(profile)),
-            });
-        });
+        await page.route('**/Platform/Destiny2/**', (route) => fulfillBungie(route, profile));
 
         // Set up waiter for queue-crawl before navigating — it is fire-and-forget
         // and may resolve before the await.
-        const queueCrawlDone = page.waitForResponse(
-            (res) => res.url().includes('/api/players/queue-crawl') && res.request().method() === 'POST',
-            { timeout: 15_000 },
-        );
+        const queueCrawlDone = waitForQueueCrawl(page);
 
         await page.goto(`/player/3/${HAPPY_ID}`);
 
@@ -109,21 +100,14 @@ test.describe('client-write verify', () => {
     });
 
     test('private account: privacy error skips POST, reads containing session', async ({ page }) => {
-        const log: NetworkEntry[] = [];
-        await interceptApiCalls(page, log);
+        const log = interceptApiCalls(page);
 
         // Stub Bungie GetProfile with error code 1665 (privacy restriction).
-        await page.route('**/Platform/Destiny2/**', async (route) => {
-            await route.fulfill({
-                status: 200,
-                contentType: 'application/json',
-                body: JSON.stringify(bungieEnvelope({}, {
-                    ErrorCode: 1665,
-                    ErrorStatus: 'DestinyPrivacyRestriction',
-                    Message: 'No peeking.',
-                })),
-            });
-        });
+        await page.route('**/Platform/Destiny2/**', (route) => fulfillBungie(route, {}, {
+            ErrorCode: 1665,
+            ErrorStatus: 'DestinyPrivacyRestriction',
+            Message: 'No peeking.',
+        }));
 
         await page.goto(`/player/3/${PRIVATE_ID}`);
 

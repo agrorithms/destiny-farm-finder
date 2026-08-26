@@ -1,8 +1,15 @@
 import type { DestinyLinkedProfilesResponse, DestinyProfileResponse } from '../../src/lib/bungie/types';
+import { RAID_HASH } from './pgcr-builder';
 
-// Salvation's Edge normal — a real hash from RAID_DEFINITIONS so parseAndStoreActivity
-// processes it instead of silently returning 'inactive'.
-const DEFAULT_RAID_HASH = 2192826039;
+/**
+ * Salvation's Edge — re-exported from pgcr-builder so both builders name one
+ * constant. A hash outside RAID_DEFINITIONS makes parseAndStoreActivity return
+ * 'inactive', which is a confusing way for an active-session test to fail.
+ */
+export { RAID_HASH };
+
+/** Bungie's mode type for a raid. Nothing under test varies it. */
+const RAID_MODE_TYPE = 4;
 
 const DEFAULT_MEMBERSHIP_ID = '4611686018488400001';
 const DEFAULT_MEMBERSHIP_TYPE = 3;
@@ -12,164 +19,141 @@ function defaultStartTime(): string {
     return new Date(Date.now() - 30 * 60_000).toISOString();
 }
 
-export interface ProfileOverrides {
+/** Who the profile belongs to. Every preset honours all of these. */
+export interface ProfileIdentityOverrides {
     membershipId?: string;
     membershipType?: number;
     displayName?: string;
     bungieGlobalDisplayName?: string;
     bungieGlobalDisplayNameCode?: number;
-    isPublic?: boolean;
-    characterId?: string;
+}
+
+export interface PartyMemberInput {
+    membershipId: string;
+    displayName?: string;
+    status?: number;
+}
+
+export interface ActiveProfileOverrides extends ProfileIdentityOverrides {
     activityHash?: number;
-    activityModeHash?: number;
-    activityModeType?: number;
-    dateActivityStarted?: string;
     startTime?: string;
-    numberOfPlayers?: number;
-    partyMembers?: Array<{ membershipId: string; emblemHash?: number; displayName?: string; status?: number }>;
+    partyMembers?: PartyMemberInput[];
+}
+
+export interface PrivateProfileOverrides extends ProfileIdentityOverrides {
+    startTime?: string;
+    partyMembers?: PartyMemberInput[];
+    /**
+     * Defaults to true. Set false for a private account Bungie tells us nothing
+     * about — with transitory data present the route takes the *provisional
+     * session* path instead, which is a different assertion.
+     */
     withTransitoryData?: boolean;
 }
 
-type PartyMemberInput = NonNullable<ProfileOverrides['partyMembers']>[number];
-
-function toTransitoryPartyMembers(members: PartyMemberInput[]) {
-    return members.map((m) => ({
-        membershipId: m.membershipId,
-        emblemHash: m.emblemHash ?? 0,
-        displayName: m.displayName ?? m.membershipId,
-        status: m.status ?? 1,
-    }));
+/**
+ * The presets below differ only in these two blocks plus the `characterActivities`
+ * shape, so they are built once here rather than restated three times.
+ */
+function buildUserInfo(overrides: ProfileIdentityOverrides, fallbackName: string, code: number, isPublic: boolean) {
+    const name = overrides.displayName ?? fallbackName;
+    return {
+        membershipId: overrides.membershipId ?? DEFAULT_MEMBERSHIP_ID,
+        membershipType: overrides.membershipType ?? DEFAULT_MEMBERSHIP_TYPE,
+        displayName: name,
+        bungieGlobalDisplayName: overrides.bungieGlobalDisplayName ?? name,
+        bungieGlobalDisplayNameCode: overrides.bungieGlobalDisplayNameCode ?? code,
+        isPublic,
+    };
 }
 
-export function buildActiveProfile(overrides: ProfileOverrides = {}): DestinyProfileResponse {
-    const membershipId = overrides.membershipId ?? DEFAULT_MEMBERSHIP_ID;
-    const membershipType = overrides.membershipType ?? DEFAULT_MEMBERSHIP_TYPE;
-    const characterId = overrides.characterId ?? DEFAULT_CHARACTER_ID;
-    const activityHash = overrides.activityHash ?? DEFAULT_RAID_HASH;
-    const startTime = overrides.dateActivityStarted ?? overrides.startTime ?? defaultStartTime();
+function buildTransitoryData(
+    partyMembers: PartyMemberInput[],
+    startTime: string,
+    activityHash: number,
+    activityModeType: number
+) {
+    return {
+        data: {
+            partyMembers: partyMembers.map((member) => ({
+                membershipId: member.membershipId,
+                emblemHash: 0,
+                displayName: member.displayName ?? member.membershipId,
+                status: member.status ?? 1,
+            })),
+            currentActivity: {
+                startTime,
+                endTime: '',
+                score: 0,
+                highestOpposingFactionScore: 0,
+                numberOfOpponents: 0,
+                numberOfPlayers: partyMembers.length,
+                currentActivityHash: activityHash,
+                currentActivityModeHash: 0,
+                currentActivityModeType: activityModeType,
+                currentPlaylistActivityHash: 0,
+            },
+            joinability: { openSlots: 0, privacySetting: 0, closedReasons: 0 },
+        },
+    };
+}
+
+/** A public account mid-raid: character activity and transitory data agree. */
+export function buildActiveProfile(overrides: ActiveProfileOverrides = {}): DestinyProfileResponse {
+    const userInfo = buildUserInfo(overrides, 'TestGuardian', 1234, true);
+    const activityHash = overrides.activityHash ?? RAID_HASH;
+    const startTime = overrides.startTime ?? defaultStartTime();
     const partyMembers = overrides.partyMembers ?? [
-        { membershipId, emblemHash: 0, displayName: overrides.displayName ?? 'TestGuardian', status: 1 },
+        { membershipId: userInfo.membershipId, displayName: userInfo.displayName },
     ];
 
     return {
-        profile: {
-            data: {
-                userInfo: {
-                    membershipId,
-                    membershipType,
-                    displayName: overrides.displayName ?? 'TestGuardian',
-                    bungieGlobalDisplayName: overrides.bungieGlobalDisplayName ?? 'TestGuardian',
-                    bungieGlobalDisplayNameCode: overrides.bungieGlobalDisplayNameCode ?? 1234,
-                    isPublic: overrides.isPublic ?? true,
-                },
-                characterIds: [characterId],
-            },
-        },
+        profile: { data: { userInfo, characterIds: [DEFAULT_CHARACTER_ID] } },
         characterActivities: {
             data: {
-                [characterId]: {
+                [DEFAULT_CHARACTER_ID]: {
                     currentActivityHash: activityHash,
-                    currentActivityModeHash: overrides.activityModeHash ?? 0,
-                    currentActivityModeType: overrides.activityModeType ?? 4,
+                    currentActivityModeHash: 0,
+                    currentActivityModeType: RAID_MODE_TYPE,
                     dateActivityStarted: startTime,
                 },
             },
         },
-        profileTransitoryData: {
-            data: {
-                partyMembers: toTransitoryPartyMembers(partyMembers),
-                currentActivity: {
-                    startTime,
-                    endTime: '',
-                    score: 0,
-                    highestOpposingFactionScore: 0,
-                    numberOfOpponents: 0,
-                    numberOfPlayers: overrides.numberOfPlayers ?? partyMembers.length,
-                    currentActivityHash: activityHash,
-                    currentActivityModeHash: overrides.activityModeHash ?? 0,
-                    currentActivityModeType: overrides.activityModeType ?? 4,
-                    currentPlaylistActivityHash: 0,
-                },
-                joinability: { openSlots: 0, privacySetting: 0, closedReasons: 0 },
-            },
-        },
+        profileTransitoryData: buildTransitoryData(partyMembers, startTime, activityHash, RAID_MODE_TYPE),
     };
 }
 
-export function buildPrivateProfile(overrides: ProfileOverrides = {}): DestinyProfileResponse {
-    const membershipId = overrides.membershipId ?? DEFAULT_MEMBERSHIP_ID;
-    const membershipType = overrides.membershipType ?? DEFAULT_MEMBERSHIP_TYPE;
+/**
+ * A private account: characterActivities is withheld, so the only thing that can
+ * hint at an activity is transitory data — and it carries no activity hash.
+ */
+export function buildPrivateProfile(overrides: PrivateProfileOverrides = {}): DestinyProfileResponse {
+    const userInfo = buildUserInfo(overrides, 'PrivateGuardian', 5678, false);
     const startTime = overrides.startTime ?? defaultStartTime();
     const partyMembers = overrides.partyMembers ?? [
-        { membershipId, emblemHash: 0, displayName: overrides.displayName ?? 'PrivateGuardian', status: 1 },
+        { membershipId: userInfo.membershipId, displayName: userInfo.displayName },
     ];
 
-    const withTransitory = overrides.withTransitoryData !== false;
-
     return {
-        profile: {
-            data: {
-                userInfo: {
-                    membershipId,
-                    membershipType,
-                    displayName: overrides.displayName ?? 'PrivateGuardian',
-                    bungieGlobalDisplayName: overrides.bungieGlobalDisplayName ?? 'PrivateGuardian',
-                    bungieGlobalDisplayNameCode: overrides.bungieGlobalDisplayNameCode ?? 5678,
-                    isPublic: false,
-                },
-                characterIds: [overrides.characterId ?? DEFAULT_CHARACTER_ID],
-            },
-        },
-        characterActivities: {
-            privacy: 2,
-        },
-        profileTransitoryData: withTransitory
-            ? {
-                data: {
-                    partyMembers: toTransitoryPartyMembers(partyMembers),
-                    currentActivity: {
-                        startTime,
-                        endTime: '',
-                        score: 0,
-                        highestOpposingFactionScore: 0,
-                        numberOfOpponents: 0,
-                        numberOfPlayers: overrides.numberOfPlayers ?? partyMembers.length,
-                        currentActivityHash: overrides.activityHash ?? 0,
-                        currentActivityModeHash: overrides.activityModeHash ?? 0,
-                        currentActivityModeType: overrides.activityModeType ?? 0,
-                        currentPlaylistActivityHash: 0,
-                    },
-                    joinability: { openSlots: 0, privacySetting: 0, closedReasons: 0 },
-                },
-            }
-            : { data: null },
+        profile: { data: { userInfo, characterIds: [DEFAULT_CHARACTER_ID] } },
+        characterActivities: { privacy: 2 },
+        profileTransitoryData: overrides.withTransitoryData === false
+            ? { data: null }
+            : buildTransitoryData(partyMembers, startTime, 0, 0),
     };
 }
 
-export function buildInactiveProfile(overrides: ProfileOverrides = {}): DestinyProfileResponse {
-    const membershipId = overrides.membershipId ?? DEFAULT_MEMBERSHIP_ID;
-    const membershipType = overrides.membershipType ?? DEFAULT_MEMBERSHIP_TYPE;
-
+/** A public account sitting in orbit: no current activity anywhere. */
+export function buildInactiveProfile(overrides: ProfileIdentityOverrides = {}): DestinyProfileResponse {
     return {
         profile: {
             data: {
-                userInfo: {
-                    membershipId,
-                    membershipType,
-                    displayName: overrides.displayName ?? 'InactiveGuardian',
-                    bungieGlobalDisplayName: overrides.bungieGlobalDisplayName ?? 'InactiveGuardian',
-                    bungieGlobalDisplayNameCode: overrides.bungieGlobalDisplayNameCode ?? 9012,
-                    isPublic: overrides.isPublic ?? true,
-                },
-                characterIds: [overrides.characterId ?? DEFAULT_CHARACTER_ID],
+                userInfo: buildUserInfo(overrides, 'InactiveGuardian', 9012, true),
+                characterIds: [DEFAULT_CHARACTER_ID],
             },
         },
-        characterActivities: {
-            data: {},
-        },
-        profileTransitoryData: {
-            data: null,
-        },
+        characterActivities: { data: {} },
+        profileTransitoryData: { data: null },
     };
 }
 
@@ -198,11 +182,8 @@ export function bungieEnvelope(response: unknown, overrides: BungieEnvelopeOverr
 export interface LinkedProfileOverrides {
     membershipId?: string;
     membershipType?: number;
-    displayName?: string;
     bungieGlobalDisplayName?: string;
     bungieGlobalDisplayNameCode?: number;
-    isCrossSavePrimary?: boolean;
-    isPublic?: boolean;
 }
 
 /**
@@ -212,7 +193,7 @@ export interface LinkedProfileOverrides {
 export function buildLinkedProfiles(overrides: LinkedProfileOverrides = {}): DestinyLinkedProfilesResponse {
     const membershipId = overrides.membershipId ?? DEFAULT_MEMBERSHIP_ID;
     const membershipType = overrides.membershipType ?? DEFAULT_MEMBERSHIP_TYPE;
-    const name = overrides.bungieGlobalDisplayName ?? overrides.displayName ?? 'TestGuardian';
+    const name = overrides.bungieGlobalDisplayName ?? 'TestGuardian';
     const code = overrides.bungieGlobalDisplayNameCode ?? 1234;
 
     return {
@@ -220,18 +201,14 @@ export function buildLinkedProfiles(overrides: LinkedProfileOverrides = {}): Des
             {
                 membershipId,
                 membershipType,
-                displayName: overrides.displayName ?? name,
+                displayName: name,
                 bungieGlobalDisplayName: name,
                 bungieGlobalDisplayNameCode: code,
-                isCrossSavePrimary: overrides.isCrossSavePrimary ?? true,
+                isCrossSavePrimary: true,
                 applicableMembershipTypes: [membershipType],
-                isPublic: overrides.isPublic ?? true,
+                isPublic: true,
             },
         ],
-        bnetMembership: {
-            membershipId,
-            bungieGlobalDisplayName: name,
-            bungieGlobalDisplayNameCode: code,
-        },
+        bnetMembership: { membershipId, bungieGlobalDisplayName: name, bungieGlobalDisplayNameCode: code },
     };
 }

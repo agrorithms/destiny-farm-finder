@@ -1,7 +1,9 @@
 import { expect, test } from './support/test-fixtures';
 import { RAID_A, seedPlayerWithSession } from './support/seed-world';
-import { bungieEnvelope, buildActiveProfile, buildLinkedProfiles } from '../tests/helpers/bungie-profile-builder';
-import { callIndex, callIndexes, interceptApiCalls, type NetworkEntry } from './support/network-log';
+import { buildActiveProfile, buildLinkedProfiles } from '../tests/helpers/bungie-profile-builder';
+import { formatBungieDisplayName } from '../src/lib/db/queries';
+import { callIndex, callIndexes, interceptApiCalls, waitForQueueCrawl } from './support/network-log';
+import { fulfillBungie } from './support/bungie-stub';
 
 /**
  * Scenario 2 — the full Name#Code enrichment round-trip, end to end in a browser.
@@ -46,8 +48,15 @@ const UNKNOWN_MEMBERS: UnknownMember[] = [
     { membershipId: '4611686018488400103', name: 'RosterBravo84', code: 8403 },
 ];
 
+/** The production formatter, so a fixture code under four digits still matches
+ *  what the DOM renders (formatBungieDisplayName zero-pads). */
 function displayNameOf(member: UnknownMember): string {
-    return `${member.name}#${member.code}`;
+    return formatBungieDisplayName({
+        membershipId: member.membershipId,
+        displayName: member.name,
+        bungieGlobalDisplayName: member.name,
+        bungieGlobalDisplayNameCode: member.code,
+    });
 }
 
 test.beforeAll(() => {
@@ -64,8 +73,7 @@ test.beforeAll(() => {
 
 test.describe('client-write resolve', () => {
     test('names unknown roster members and repaints their cards as clickable Name#Code', async ({ page }) => {
-        const log: NetworkEntry[] = [];
-        await interceptApiCalls(page, log);
+        const log = interceptApiCalls(page);
 
         // Same roster the seeded session carries, so the POST does not change who is
         // unresolved — only the server's knowledge of the activity.
@@ -108,39 +116,26 @@ test.describe('client-write resolve', () => {
                 await linkedProfilesGate;
 
                 const member = UNKNOWN_MEMBERS.find((m) => m.membershipId === requestedId);
-                await route.fulfill({
-                    status: 200,
-                    contentType: 'application/json',
-                    body: JSON.stringify(bungieEnvelope(
-                        member
-                            ? buildLinkedProfiles({
-                                membershipId: member.membershipId,
-                                membershipType: 3,
-                                bungieGlobalDisplayName: member.name,
-                                bungieGlobalDisplayNameCode: member.code,
-                            })
-                            : {},
-                    )),
-                });
+                await fulfillBungie(route, member
+                    ? buildLinkedProfiles({
+                        membershipId: member.membershipId,
+                        membershipType: 3,
+                        bungieGlobalDisplayName: member.name,
+                        bungieGlobalDisplayNameCode: member.code,
+                    })
+                    : {});
                 return;
             }
 
             if (url.includes(`/Profile/${HOST_ID}/`)) {
-                await route.fulfill({
-                    status: 200,
-                    contentType: 'application/json',
-                    body: JSON.stringify(bungieEnvelope(profile)),
-                });
+                await fulfillBungie(route, profile);
                 return;
             }
 
             await route.fallback();
         });
 
-        const queueCrawlDone = page.waitForResponse(
-            (res) => res.url().includes('/api/players/queue-crawl') && res.request().method() === 'POST',
-            { timeout: 15_000 },
-        );
+        const queueCrawlDone = waitForQueueCrawl(page);
 
         await page.goto(`/player/3/${HOST_ID}`);
 
