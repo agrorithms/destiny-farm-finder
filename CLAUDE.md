@@ -26,7 +26,7 @@ For anything touching more than ~8 files, write a progress file listing each fil
 
 The `verify` skill (`.claude/skills/verify/SKILL.md`) is the build/launch/drive recipe — read it before verifying anything by hand. After a multi-file change run `npm run lint`, then `npm run build`, then `npm test`, and report the real output. Never report a change as working without it.
 
-Chromium **is** installed (Playwright). If a change affects client-side request sequencing or rendering, `npm run e2e` can actually verify it — but the browser suite covers only six flows today (leaderboard filtering, the active-session fireteam cap, `Name#Code` rendering, theme persistence, and the client-write verify + resolve chains). Outside those, browser behaviour is still unverified, and saying so plainly beats implying the server-side checks covered it. `docs/handoffs/260803-playwright-e2e.md` lists what is and isn't covered.
+Chromium **is** installed (Playwright). If a change affects client-side request sequencing or rendering, `npm run e2e` can actually verify it — but the browser suite covers only six flows today (leaderboard filtering, the active-session fireteam cap, `Name#Code` rendering, theme persistence, and the client-write verify + resolve chains), plus one server-side spec that drives the client-write guard over HTTP with no browser page. Outside those, browser behaviour is still unverified, and saying so plainly beats implying the server-side checks covered it. `docs/handoffs/260803-playwright-e2e.md` lists what is and isn't covered.
 
 **Environment.**
 

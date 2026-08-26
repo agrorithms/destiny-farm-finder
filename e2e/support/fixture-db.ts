@@ -17,6 +17,22 @@ import path from 'node:path';
  * the run controls and the only place that builds `webServer.env`.
  */
 
+/**
+ * The page-token secret the whole e2e run shares, pinned into both the runner
+ * (below, at config load) and the server (playwright.config.ts webServer.env).
+ *
+ * Pinned rather than passed through from the shell, because two things are
+ * invisible otherwise: `next start` loads .env, so an unpinned server verifies
+ * against the developer's real secret while the runner mints with whatever the
+ * shell exported; and where no .env supplies one at all — CI, a fresh clone —
+ * verifyPageToken() fails *open*, disabling the token half of the guard so every
+ * token assertion passes for the wrong reason. Production runs with the secret
+ * set, so that is the configuration worth proving.
+ *
+ * Same literal shape as tests/routes/write-route-setup.ts, for the same reason.
+ */
+export const E2E_PAGE_TOKEN_SECRET = 'e2e-page-token-secret-not-a-real-credential';
+
 /** Env vars every process in the e2e run needs. Kept in one place so the config
  *  and the workers cannot drift on the list. */
 export const FIXTURE_DB_ENV_KEYS = [

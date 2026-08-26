@@ -1,6 +1,9 @@
 import { NextRequest } from 'next/server';
-import { PAGE_TOKEN_HEADER, mintPageToken } from '../../src/lib/http/request-auth';
+import { writeHeaders } from './write-headers';
 
+// Arbitrary stand-in: nothing here opens a socket, so this host only has to be
+// self-consistent between the URL and the Origin. It does not need to track the
+// e2e suite's real port (e2e/support/server.ts).
 const HOST = 'localhost:3100';
 
 export interface WriteRequestOptions {
@@ -12,8 +15,9 @@ export interface WriteRequestOptions {
 
 /**
  * Constructs a NextRequest suitable for testing the client-write endpoints
- * (identity, queue-crawl, active-session-update). Sets the Origin, page token,
- * and x-forwarded-for headers that isTrustedClientWrite checks.
+ * (identity, queue-crawl, active-session-update). The Origin, page token, and
+ * x-forwarded-for headers that isTrustedClientWrite checks come from
+ * ./write-headers.ts, shared with the Playwright side.
  *
  * `body` takes a raw string as well as an object so the invalid-JSON branch can
  * be exercised through the same header set as every other test — a second,
@@ -29,11 +33,8 @@ export function buildWriteRequest(
     return new NextRequest(`http://${HOST}${path}`, {
         method: 'POST',
         headers: {
-            'content-type': 'application/json',
+            ...writeHeaders({ origin, ip }),
             host: HOST,
-            origin,
-            'x-forwarded-for': ip,
-            [PAGE_TOKEN_HEADER]: mintPageToken(),
         },
         body: typeof body === 'string' ? body : JSON.stringify(body),
     });
