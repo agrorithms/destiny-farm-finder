@@ -38,7 +38,7 @@ Port and build-lock hygiene is enforced by hooks in `.claude/hooks/` — a dev s
 
 - `npm run start` — **web app only.** The crawler/scanner/discovery are separate PM2 processes (`ecosystem.config.js`) and must be started independently.
 - `npm run setup-manifest` — writes `data/manifest-cache.json` for a human to read. Changes nothing about runtime behaviour; see the raid-detection convention below.
-- `npm run e2e` — Playwright browser tests. Builds, then serves the app on **port 3100** against a throwaway seeded database. Not in `npm test`, not in CI. `npm run e2e:nobuild` skips the build for fast iteration and is wrong if `.next` is stale.
+- `npm run e2e` — Playwright browser tests. Builds, then serves the app on **port 3100** against a throwaway seeded database. Not in `npm test`; runs in CI via its own `e2e.yml` on `pull_request` + `workflow_dispatch`, never on `push`. The script pins a dummy `NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY` into the build — Next inlines `NEXT_PUBLIC_*` at build time, and the client-write specs throw on a missing key before the Bungie stub can fire. `npm run e2e:nobuild` skips the build for fast iteration, is wrong if `.next` is stale, and inherits whatever key the last build baked in.
 - `npm run e2e:maintenance` — slow, spawns real crawler/scanner processes against a mock Bungie server. Deliberately outside `npm test` and CI. Unrelated to `npm run e2e` despite the name.
 
 Scripts run via `tsx` using `tsconfig.scripts.json`. Next.js app and scripts compile separately.
@@ -80,7 +80,7 @@ There is **no continuous replication.** Backups are manual snapshots: `npx tsx s
 
 ## Testing
 
-Vitest. **`tests/README.md` is the how-to** — read it before writing or changing a test; it covers the two ground rules (mock `fetch` and only `fetch`; `npm test` stays hermetic), the layout, colocate-vs-`tests/`, fixtures-vs-builders, and the naming conventions. The rationale is in [ADR 0003](docs/adr/0003-tests-run-against-a-real-sqlite-file.md) and [ADR 0004](docs/adr/0004-mock-only-at-the-network-boundary.md); the build-out is in `docs/handoffs/testing-framework-handoff.md`. CI runs `npm test` only.
+Vitest. **`tests/README.md` is the how-to** — read it before writing or changing a test; it covers the two ground rules (mock `fetch` and only `fetch`; `npm test` stays hermetic), the layout, colocate-vs-`tests/`, fixtures-vs-builders, and the naming conventions. The rationale is in [ADR 0003](docs/adr/0003-tests-run-against-a-real-sqlite-file.md) and [ADR 0004](docs/adr/0004-mock-only-at-the-network-boundary.md); the build-out is in `docs/handoffs/testing-framework-handoff.md`. CI runs `npm test` (plus lint and `tsc`) on every push and PR via `test.yml`; the browser suite has its own `e2e.yml` on `pull_request` and manual dispatch only.
 
 **Never reorder `setupFiles` in `vitest.config.ts`** — `tests/setup/test-db-path.ts` must stay first or the suite binds to the live dev database and `resetTestDb()` deletes from it. `getDb()` enforces this; `tests/README.md` explains why.
 

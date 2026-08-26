@@ -19,6 +19,13 @@ npm run e2e           # build, then drive Chromium
 npm run e2e:nobuild   # skip the build (fast; wrong if .next is stale)
 ```
 
+`npm run e2e` pins a dummy `NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY` into the build. Next inlines
+`NEXT_PUBLIC_*` at *build* time, so it has to be on `next-build` and cannot be set from
+`playwright.config.ts`; without it `getPublicApiKey()` throws before the Bungie stub fires and
+the client-write specs fail on a fresh clone or in CI. A fake value is correct — every
+bungie.net request is answered by the interceptor in `e2e/support/test-fixtures.ts`. Because
+`e2e:nobuild` does not rebuild, it inherits whatever key the last build baked in.
+
 `npm test` is meant to stay fast and reachable from anywhere. It never touches the network and
 never touches the real database — if it ever does either, that's a bug in the test, not a
 tolerable shortcut.
@@ -33,7 +40,7 @@ Three different things that all deserve to exist.
 | What | Unit and query-level tests | The app in a real browser | The maintenance-cycle harness |
 | Speed | Under a second | ~10s plus a Next build | Minutes |
 | Needs | Nothing | Chromium; builds and serves the app on port 3100 | Spawns real crawler/scanner processes against a mock Bungie server |
-| In CI | Yes | Not yet — see `docs/handoffs/260803-playwright-e2e.md` | No — too slow, too many moving parts |
+| In CI | Yes — `test.yml`, every push and PR | Yes — its own `e2e.yml`, `pull_request` + manual only | No — too slow, too many moving parts |
 
 **File naming is what keeps the two test runners apart.** `.test.ts` is Vitest;
 `.spec.ts` under `e2e/` is Playwright. Vitest's `include` lists its own

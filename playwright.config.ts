@@ -51,8 +51,24 @@ export default defineConfig({
     // order-dependent flake. See the plan's D2.
     fullyParallel: false,
     workers: 1,
-    retries: 0,
+
+    // Two retries in CI, none locally. `trace: 'on-first-retry'` below means the
+    // retry is what *produces* the diagnostic, so this and the artifact upload in
+    // .github/workflows/e2e.yml are one decision. Known cost: a genuinely flaky
+    // test goes green on retry and is silent unless you read the run summary.
+    // Note this covers the `canary` project below as well, so a failure of the
+    // fixture-database guard is also retried twice before it reports. That is
+    // survivable — the canary is deterministic, so retries cannot turn a real
+    // failure green — but it is not purely diagnostic the way a spec retry is.
+    retries: process.env.CI ? 2 : 0,
     forbidOnly: !!process.env.CI,
+
+    // `@live` tests reach the real Bungie API (see issue #25). Excluded from every
+    // invocation by default — here rather than in the CI command, so landing the
+    // first @live spec cannot start making network calls from a GitHub runner and
+    // does not require touching the workflow. Run them with
+    // `npx playwright test --grep @live`.
+    grepInvert: /@live/,
 
     reporter: 'list',
 
@@ -105,10 +121,16 @@ export default defineConfig({
             // NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY is deliberately NOT set here, and
             // cannot usefully be: Next inlines NEXT_PUBLIC_* at *build* time, so a
             // value supplied to `next start` never reaches the client bundle. The
-            // browser gets whatever was in .env when `next build` ran. Harmless
-            // today — no baseline spec makes a browser → Bungie call, and
-            // e2e/support/test-fixtures.ts stubs bungie.net regardless — but worth
-            // knowing before writing a spec that depends on the key's value.
+            // browser gets whatever was in .env when `next build` ran.
+            //
+            // That is NOT harmless: getPublicApiKey() (src/lib/bungie/client-api.ts)
+            // throws on a missing key before fetch, so the client-write specs fail
+            // before the bungie.net stub can fire — which is what happens on a fresh
+            // clone or in CI, where there is no .env. The key is therefore pinned
+            // where it can actually reach the bundle: an env prefix on `npm run e2e`
+            // in package.json, and `env:` on the build step in
+            // .github/workflows/e2e.yml. `e2e:nobuild` does not rebuild and so
+            // inherits whatever the last build baked in.
 
             // ACTIVE_SESSION_DISPLAY_LIMIT is deliberately NOT overridden here.
             // src/app/active-sessions/page.tsx requests `?limit=600` as a

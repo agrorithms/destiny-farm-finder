@@ -29,7 +29,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "e2e": "npm run next-build && playwright test",
+    "e2e": "NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY=e2e-not-a-real-bungie-key npm run next-build && playwright test",
     "e2e:nobuild": "playwright test",
     "e2e:maintenance": "npx tsx scripts/test-maintenance-cycle.ts",
     "capture-fixtures": "npx tsx scripts/capture-pgcr-fixture.ts",
