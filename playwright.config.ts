@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
-import { FIXTURE_DB_ENV_KEYS, mintFixtureDbPath } from './e2e/support/fixture-db';
+import { E2E_PAGE_TOKEN_SECRET, FIXTURE_DB_ENV_KEYS, mintFixtureDbPath, pinPageTokenSecret } from './e2e/support/fixture-db';
+import { E2E_BASE_URL, E2E_PORT } from './e2e/support/server';
 
 /**
  * Browser tests. Vitest owns `.test.ts`; this owns `.spec.ts` under e2e/, and
@@ -18,6 +19,11 @@ import { FIXTURE_DB_ENV_KEYS, mintFixtureDbPath } from './e2e/support/fixture-db
 // worker, and workers inherit the runner's env.
 const dbPath = mintFixtureDbPath();
 
+// Also at config load, and in every worker: specs mint page tokens in the
+// runner process, and they have to be signed with the same secret the server
+// is started with. See E2E_PAGE_TOKEN_SECRET.
+pinPageTokenSecret();
+
 // Fail-fast, layer 2 of the fixture-database guard. If any of these is missing
 // the `next start` child would fall back to the live database, and
 // assertDbPathAllowed() cannot help because it is opt-in by env.
@@ -30,8 +36,8 @@ for (const key of FIXTURE_DB_ENV_KEYS) {
     }
 }
 
-const PORT = 3100;
-const BASE_URL = `http://localhost:${PORT}`;
+const PORT = E2E_PORT;
+const BASE_URL = E2E_BASE_URL;
 
 export default defineConfig({
     testDir: './e2e',
@@ -118,12 +124,13 @@ export default defineConfig({
             // is stopped outright in e2e/support/test-fixtures.ts.
             SENTRY_ENVIRONMENT: 'e2e',
 
-            // Passed through so the profile page keeps minting a real page token.
-            // Nothing in the baseline specs POSTs, but leaving it unset would
-            // silently disable a layer the deferred specs depend on.
-            ...(process.env.PAGE_TOKEN_SECRET
-                ? { PAGE_TOKEN_SECRET: process.env.PAGE_TOKEN_SECRET }
-                : {}),
+            // Pinned, not passed through from the shell. Explicit here because
+            // `next start` loads .env: without this line the server verifies
+            // against the developer's real secret while the runner mints with
+            // the pinned one, and every valid-token assertion 403s. Setting it
+            // in webServer.env overrides .env for the child. See
+            // E2E_PAGE_TOKEN_SECRET for the rest of the reasoning.
+            PAGE_TOKEN_SECRET: E2E_PAGE_TOKEN_SECRET,
         },
     },
 });
