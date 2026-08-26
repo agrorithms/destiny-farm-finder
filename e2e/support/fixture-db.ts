@@ -18,23 +18,16 @@ import path from 'node:path';
  */
 
 /**
- * The page-token secret the whole e2e run shares — pinned rather than passed
- * through from the developer's shell.
+ * The page-token secret the whole e2e run shares, pinned into both the runner
+ * (below, at config load) and the server (playwright.config.ts webServer.env).
  *
- * Two problems this solves, both silent before it existed:
- *
- *   1. The server and the runner could disagree. `next start` loads .env, so the
- *      server picks up the developer's real secret; the runner only had whatever
- *      the shell exported. Verified by mutation: with the pin removed from both
- *      places a valid-origin, valid-token POST still 403s, because the server is
- *      verifying against .env while the runner mints against nothing.
- *   2. Where no .env supplies one — CI, a fresh clone — verifyPageToken() fails
- *      *open*, so the whole token half of the guard is disabled and every token
- *      assertion passes for the wrong reason.
- *
- * Production runs with the secret set, so that is the configuration worth
- * proving. Pinning it in both processes is also what lets a spec mint a token
- * the server will actually accept, which is what makes the negatives falsifiable.
+ * Pinned rather than passed through from the shell, because two things are
+ * invisible otherwise: `next start` loads .env, so an unpinned server verifies
+ * against the developer's real secret while the runner mints with whatever the
+ * shell exported; and where no .env supplies one at all — CI, a fresh clone —
+ * verifyPageToken() fails *open*, disabling the token half of the guard so every
+ * token assertion passes for the wrong reason. Production runs with the secret
+ * set, so that is the configuration worth proving.
  *
  * Same literal shape as tests/routes/write-route-setup.ts, for the same reason.
  */
@@ -79,20 +72,6 @@ export function mintFixtureDbPath(): string {
     process.env.DFF_E2E_RUN_ID = path.basename(dir).replace('dff-e2e-', '');
 
     return dbPath;
-}
-
-/**
- * Pins PAGE_TOKEN_SECRET in *this* process. Called from playwright.config.ts
- * next to mintFixtureDbPath(), and separate from it so neither function's name
- * hides what it does.
- *
- * Unconditional, not a fallback: a developer's own PAGE_TOKEN_SECRET would
- * otherwise survive into the worker and mint tokens the server — started with
- * the pinned literal — rejects. The server side is set in webServer.env; both
- * halves are needed, and E2E_PAGE_TOKEN_SECRET explains why.
- */
-export function pinPageTokenSecret(): void {
-    process.env.PAGE_TOKEN_SECRET = E2E_PAGE_TOKEN_SECRET;
 }
 
 /** The nonce that ties the canary row to this specific run. */

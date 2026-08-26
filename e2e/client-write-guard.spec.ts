@@ -98,14 +98,13 @@ test.describe('client-write guard over HTTP', () => {
         expect(await response.json()).toEqual({ error: 'Forbidden' });
     });
 
-    // The token layer is on. This is the case that would go green for the wrong
-    // reason if no PAGE_TOKEN_SECRET reached the server at all — verifyPageToken()
-    // fails open without one, and a tokenless request would then be allowed
-    // through to a 200. It guards the pin in e2e/support/fixture-db.ts as much as
-    // it guards the endpoint.
+    // Also the check on the pin itself: verifyPageToken() fails open when no
+    // PAGE_TOKEN_SECRET reaches the server, and a tokenless request would then be
+    // allowed through to a 200. See E2E_PAGE_TOKEN_SECRET in
+    // e2e/support/fixture-db.ts.
     test('valid origin with no page token is rejected', async ({ request }) => {
         const response = await request.post('/api/players/identity', {
-            headers: writeHeaders({ token: null, ip: '85.0.0.4' }),
+            headers: writeHeaders({ omitToken: true, ip: '85.0.0.4' }),
             data: identityBody,
         });
 
@@ -113,25 +112,22 @@ test.describe('client-write guard over HTTP', () => {
         expect(await response.json()).toEqual({ error: 'Forbidden' });
     });
 
-    // The two smokes below prove the guard is installed on every client-write
-    // surface, not just the one the matrix above exercises.
-    test('queue-crawl carries the guard', async ({ request }) => {
-        const response = await request.post('/api/players/queue-crawl', {
-            headers: writeHeaders({ origin: SPOOFED_ORIGIN, ip: '85.0.0.5' }),
-            data: queueCrawlBody,
+    // These prove the guard is installed on every client-write surface, not just
+    // the one the matrix above exercises.
+    const smokes = [
+        { endpoint: 'queue-crawl', ip: '85.0.0.5', body: queueCrawlBody },
+        { endpoint: 'active-session-update', ip: '85.0.0.6', body: activeSessionUpdateBody },
+    ];
+
+    for (const { endpoint, ip, body } of smokes) {
+        test(`${endpoint} carries the guard`, async ({ request }) => {
+            const response = await request.post(`/api/players/${endpoint}`, {
+                headers: writeHeaders({ origin: SPOOFED_ORIGIN, ip }),
+                data: body,
+            });
+
+            expect(response.status()).toBe(403);
+            expect(await response.json()).toEqual({ error: 'Forbidden' });
         });
-
-        expect(response.status()).toBe(403);
-        expect(await response.json()).toEqual({ error: 'Forbidden' });
-    });
-
-    test('active-session-update carries the guard', async ({ request }) => {
-        const response = await request.post('/api/players/active-session-update', {
-            headers: writeHeaders({ origin: SPOOFED_ORIGIN, ip: '85.0.0.6' }),
-            data: activeSessionUpdateBody,
-        });
-
-        expect(response.status()).toBe(403);
-        expect(await response.json()).toEqual({ error: 'Forbidden' });
-    });
+    }
 });

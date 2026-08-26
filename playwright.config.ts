@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { E2E_PAGE_TOKEN_SECRET, FIXTURE_DB_ENV_KEYS, mintFixtureDbPath, pinPageTokenSecret } from './e2e/support/fixture-db';
+import { E2E_PAGE_TOKEN_SECRET, FIXTURE_DB_ENV_KEYS, mintFixtureDbPath } from './e2e/support/fixture-db';
 import { E2E_BASE_URL, E2E_PORT } from './e2e/support/server';
 
 /**
@@ -20,9 +20,11 @@ import { E2E_BASE_URL, E2E_PORT } from './e2e/support/server';
 const dbPath = mintFixtureDbPath();
 
 // Also at config load, and in every worker: specs mint page tokens in the
-// runner process, and they have to be signed with the same secret the server
-// is started with. See E2E_PAGE_TOKEN_SECRET.
-pinPageTokenSecret();
+// runner process and they have to be signed with the same secret the server is
+// started with (set in webServer.env below). Unconditional — a developer's own
+// PAGE_TOKEN_SECRET would otherwise survive into the worker and mint tokens the
+// server rejects. See E2E_PAGE_TOKEN_SECRET.
+process.env.PAGE_TOKEN_SECRET = E2E_PAGE_TOKEN_SECRET;
 
 // Fail-fast, layer 2 of the fixture-database guard. If any of these is missing
 // the `next start` child would fall back to the live database, and
@@ -35,9 +37,6 @@ for (const key of FIXTURE_DB_ENV_KEYS) {
         );
     }
 }
-
-const PORT = E2E_PORT;
-const BASE_URL = E2E_BASE_URL;
 
 export default defineConfig({
     testDir: './e2e',
@@ -60,7 +59,7 @@ export default defineConfig({
     globalSetup: './e2e/support/global-setup.ts',
 
     use: {
-        baseURL: BASE_URL,
+        baseURL: E2E_BASE_URL,
         trace: 'on-first-retry',
         screenshot: 'only-on-failure',
         video: 'off',
@@ -87,8 +86,8 @@ export default defineConfig({
         // The build is NOT here — `npm run e2e` runs it first, in the shell, so
         // a build failure reads as a build failure rather than as a server that
         // failed to start, and so it stays under .claude/hooks/guard-build.sh.
-        command: `npm run start -- -p ${PORT}`,
-        url: BASE_URL,
+        command: `npm run start -- -p ${E2E_PORT}`,
+        url: E2E_BASE_URL,
         // Never reuse. A server left from an earlier run points at that run's
         // fixture database; the canary would then be checking the wrong one.
         // The canary's per-run nonce catches it anyway, but not starting a stale
@@ -124,12 +123,9 @@ export default defineConfig({
             // is stopped outright in e2e/support/test-fixtures.ts.
             SENTRY_ENVIRONMENT: 'e2e',
 
-            // Pinned, not passed through from the shell. Explicit here because
-            // `next start` loads .env: without this line the server verifies
-            // against the developer's real secret while the runner mints with
-            // the pinned one, and every valid-token assertion 403s. Setting it
-            // in webServer.env overrides .env for the child. See
-            // E2E_PAGE_TOKEN_SECRET for the rest of the reasoning.
+            // The server half of the pin. Explicit here because `next start`
+            // loads .env, and only a value set in webServer.env overrides it for
+            // the child. See E2E_PAGE_TOKEN_SECRET.
             PAGE_TOKEN_SECRET: E2E_PAGE_TOKEN_SECRET,
         },
     },
