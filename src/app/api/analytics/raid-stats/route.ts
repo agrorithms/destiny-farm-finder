@@ -58,10 +58,14 @@ export async function GET(request: NextRequest) {
             raids: rows.map(row => ({
                 raidKey: row.raidKey,
                 raidName: raids[row.raidKey]?.name || row.raidKey,
+                // Outside the scope toggle: fastest clear is full-clear-only by definition,
+                // and dnfRate is 0 by construction under a full-clear scope.
                 fastestClearSeconds: row.fastestClearSeconds,
                 dnfRate: row.dnfRate,
-                classDistribution: row.classDistribution,
-                avgKda: row.avgKda,
+                instanceCount: row.instanceCount,
+                // The nesting is the documentation of which metrics respond to the toggle.
+                fullClear: row.fullClear,
+                allAttempts: row.allAttempts,
             })),
         };
 
