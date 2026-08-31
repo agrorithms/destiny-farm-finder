@@ -19,23 +19,29 @@ import { RAID_A, RAID_B } from './support/seed-world';
 const RAID_A_PLAYER = 'FixtureAlpha#4242';
 const RAID_B_PLAYER = 'FixtureDelta#2222';
 
-async function selectRaid(page: Page, raidName: string): Promise<void> {
+async function openRaidDropdown(page: Page): Promise<void> {
     await page.getByRole('button', { name: 'All Raids' }).click();
+}
+
+async function selectRaid(page: Page, raidName: string): Promise<void> {
+    await openRaidDropdown(page);
     await page.getByRole('option', { name: raidName }).click();
 }
 
 /**
- * Asserts every raid option in the open dropdown. Scoped to the listbox — the
- * page's other controls are native <select>s, whose <option> elements carry the
- * same role and would otherwise be swept into this locator.
+ * Asserts every raid option in the open dropdown carries the given aria-selected.
+ * Scoped to the listbox — the page's other controls are native <select>s, whose
+ * <option> elements carry the same role and would otherwise be swept in.
+ *
+ * Counting the matching options rather than asserting each one in turn keeps this
+ * to a single retrying assertion instead of one per raid; combined with the
+ * non-zero guard, "as many options carry the attribute as exist" is the same
+ * claim as "every option carries it".
  */
 async function expectEveryOptionSelected(listbox: Locator, ariaSelected: 'true' | 'false'): Promise<void> {
-    const options = listbox.getByRole('option');
-    const optionCount = await options.count();
+    const optionCount = await listbox.getByRole('option').count();
     expect(optionCount).toBeGreaterThan(0);
-    for (let i = 0; i < optionCount; i++) {
-        await expect(options.nth(i)).toHaveAttribute('aria-selected', ariaSelected);
-    }
+    await expect(listbox.locator(`[role="option"][aria-selected="${ariaSelected}"]`)).toHaveCount(optionCount);
 }
 
 test.describe('leaderboard', () => {
@@ -128,13 +134,9 @@ test.describe('leaderboard', () => {
     });
 
     /**
-     * Regression: the Select All / Clear Filter buttons did nothing on iOS.
-     *
-     * WebKit does not focus a <button> on tap, and Chrome and Edge on iOS are both
-     * WKWebView. So tapping either utility button blurred the listbox with a null
-     * relatedTarget; RaidMultiSelect's focusout handler read that as "focus left the
-     * dropdown", closed it, and React unmounted the button before its click could
-     * dispatch. The dropdown shut and the selection never changed.
+     * Regression: the Select All / Clear Filter buttons did nothing on iOS. The
+     * mechanism lives with the fix — see the null-relatedTarget guard in
+     * RaidMultiSelect's focusout handler.
      *
      * Chromium focuses buttons on mousedown, so it cannot reproduce the tap itself.
      * The blur() below produces the event the tap actually produced — a real
@@ -145,7 +147,7 @@ test.describe('leaderboard', () => {
     test('utility buttons still act when the listbox blurs to nothing', async ({ page }) => {
         await page.goto('/leaderboard');
 
-        await page.getByRole('button', { name: 'All Raids' }).click();
+        await openRaidDropdown(page);
         const listbox = page.getByRole('listbox');
         await expect(listbox).toBeVisible();
 
