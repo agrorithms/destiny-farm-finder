@@ -17,6 +17,8 @@ export interface SystemStats {
     crawlerStatus: string;
     lastHeartbeat: string | null;
     secondsSinceHeartbeat: number | null;
+    secondsSinceSessionHeartbeat: number | null;
+    sessionWatchdogTrips: number;
     bungieMaintenanceActive: boolean;
     bungieMaintenanceUntil: number | null;
     bungieMaintenanceRemainingMs: number;
@@ -75,6 +77,8 @@ export function getStatusStats(): StatusStats {
         crawlerStatus: crawlerStatus.status,
         lastHeartbeat: crawlerStatus.lastHeartbeat,
         secondsSinceHeartbeat: crawlerStatus.secondsSinceHeartbeat,
+        secondsSinceSessionHeartbeat: crawlerStatus.secondsSinceSessionHeartbeat,
+        sessionWatchdogTrips: crawlerStatus.sessionWatchdogTrips,
         bungieMaintenanceActive: bungieMaintenance.active,
         bungieMaintenanceUntil: bungieMaintenance.until,
         bungieMaintenanceRemainingMs: bungieMaintenance.remainingMs,

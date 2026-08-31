@@ -1626,6 +1626,11 @@ export function getCrawlerStatus(): {
     lastHeartbeat: string | null;
     status: string;
     secondsSinceHeartbeat: number | null;
+    // Active-session loop liveness, tracked separately from the crawl-loop heartbeat above.
+    // The crawl heartbeat stays fresh even when the session loop is dead/stalled, so this is
+    // the only signal that reveals a session-loop stall. null until the first poll completes.
+    secondsSinceSessionHeartbeat: number | null;
+    sessionWatchdogTrips: number;
 } {
     const db = getDb();
 
@@ -1637,7 +1642,22 @@ export function getCrawlerStatus(): {
         "SELECT value FROM crawler_state WHERE key = 'status'"
     ).get() as { value: string } | undefined;
 
+    const sessionHeartbeatRow = db.prepare(
+        "SELECT updated_at FROM crawler_state WHERE key = 'session_heartbeat'"
+    ).get() as { updated_at: number } | undefined;
+
+    const watchdogTripsRow = db.prepare(
+        "SELECT value FROM crawler_state WHERE key = 'session_watchdog_trips'"
+    ).get() as { value: string } | undefined;
+
     const now = Math.floor(Date.now() / 1000);
+
+    const secondsSinceSessionHeartbeat = sessionHeartbeatRow
+        ? now - sessionHeartbeatRow.updated_at
+        : null;
+    const sessionWatchdogTrips = watchdogTripsRow
+        ? (parseInt(watchdogTripsRow.value, 10) || 0)
+        : 0;
 
     if (!heartbeatRow) {
         return {
@@ -1645,6 +1665,8 @@ export function getCrawlerStatus(): {
             lastHeartbeat: null,
             status: 'never_started',
             secondsSinceHeartbeat: null,
+            secondsSinceSessionHeartbeat,
+            sessionWatchdogTrips,
         };
     }
 
@@ -1659,5 +1681,7 @@ export function getCrawlerStatus(): {
         lastHeartbeat: heartbeatRow.value,
         status: isRunning ? (statusRow?.value || 'running') : 'stale',
         secondsSinceHeartbeat,
+        secondsSinceSessionHeartbeat,
+        sessionWatchdogTrips,
     };
 }

@@ -38,6 +38,14 @@ const DEFAULT_MEMBER_RESOLVE_LIMIT = Math.max(
     parseInt(process.env.CRAWLER_MEMBER_RESOLVE_LIMIT || '25', 10)
 );
 
+// Resolve unknown fireteam members with a little concurrency instead of one-at-a-time.
+// Sequential resolution of the full limit (25) could run ~25 × fetch-timeout (~12.5 min)
+// on a bad night — long enough to trip the active-session poll watchdog on its own.
+const DEFAULT_MEMBER_RESOLVE_CONCURRENCY = Math.max(
+    1,
+    parseInt(process.env.CRAWLER_MEMBER_RESOLVE_CONCURRENCY || '4', 10)
+);
+
 interface CharacterActivityLike {
     dateActivityStarted?: string;
     currentActivityHash?: number;
@@ -60,7 +68,11 @@ interface StaleSessionRow {
     party_members_json: string | null;
 }
 
-export type PlayerActivityCheckStatus = 'active' | 'inactive' | 'privacyRestricted';
+// 'inactive' is a *clean* signal (transitory data present, player simply not in an
+// activity). 'error' means we got no usable signal at all — a timeout / 5xx / network
+// failure — and must NOT be treated as "offline": doing so lets a Bungie storm wrongly
+// bench live raiders (Step 2 backoff) and delete live fireteams (stale re-verify).
+export type PlayerActivityCheckStatus = 'active' | 'inactive' | 'privacyRestricted' | 'error';
 
 export interface PlayerActivityCheckResult {
     status: PlayerActivityCheckStatus;
@@ -116,8 +128,10 @@ export async function checkPlayerActivityDetailed(
         if (isBungiePrivacyRestrictionError(error)) {
             return { status: 'privacyRestricted', session: null };
         }
+        // Transient failure (timeout / 5xx / network). Report 'error', not 'inactive',
+        // so callers don't mistake a Bungie hiccup for the player being offline.
         console.error(`[ERROR] Unexpected error checking activity for ${player.membershipId}:`, (error as Error).message);
-        return { status: 'inactive', session: null };
+        return { status: 'error', session: null };
     }
 }
 
@@ -311,48 +325,67 @@ export async function refreshStaleSessionsWithOptions(options?: {
     const results = await processWithConcurrency(
         staleSessions,
         concurrency,
-        async (session) => {
+        async (session): Promise<'refreshed' | 'removed' | 'kept'> => {
             const player: PlayerInfo = {
                 membershipId: session.membership_id,
                 membershipType: session.membership_type,
                 displayName: session.display_name,
             };
 
-            const result = await checkPlayerActivity(player, client);
+            const anchor = await checkPlayerActivityDetailed(player, client);
 
-            if (result) {
-                return true;
+            if (anchor.status === 'active') {
+                return 'refreshed';
             }
 
-            // If the anchor player is no longer active, quickly probe a couple teammates
-            // before removing this row. This avoids collapsing a still-active fireteam
-            // when one player leaves, disconnects, or has transient privacy/API issues.
+            // No usable signal on the anchor (timeout / 5xx / network): do NOT probe
+            // teammates into the same storm, and do NOT delete on missing information —
+            // a Bungie hiccup must not erase a live fireteam. Keep the row and retry next
+            // cycle; the MAX_SESSION_AGE force-delete below is the ultimate backstop.
+            if (anchor.status === 'error') {
+                return 'kept';
+            }
+
+            // Anchor is cleanly gone (offline, or went private). Probe a couple teammates
+            // before removing the row, so one player leaving doesn't collapse a live fireteam.
             const teammateCandidates = getTeammateCandidates(
                 session.party_members_json,
                 session.membership_id
             ).slice(0, STALE_REVERIFY_TEAMMATE_FALLBACK_LIMIT);
 
+            let sawTeammateError = false;
             for (const teammate of teammateCandidates) {
-                const teammateResult = await checkPlayerActivity(teammate, client);
-                if (teammateResult) {
-                    // Anchor left / went private but teammate is still active —
-                    // the raid may still be in progress. Enqueue the anchor only so
-                    // the completed PGCR lands as soon as they finish.
+                const teammateResult = await checkPlayerActivityDetailed(teammate, client);
+                if (teammateResult.status === 'active') {
+                    // Anchor left / went private but teammate is still active — the raid may
+                    // still be in progress. Enqueue the anchor only so the completed PGCR
+                    // lands as soon as they finish.
                     enqueueEndedSession(session);
                     deleteActiveSessionForPlayer(session.membership_id);
-                    return true;
+                    return 'refreshed';
+                }
+                if (teammateResult.status === 'error') {
+                    sawTeammateError = true;
                 }
             }
 
-            // All probed players are inactive: raid confirmed ended. Enqueue the full fireteam.
+            // A probe returned no signal (timeout/5xx): we can't positively confirm the raid
+            // ended, so don't delete on incomplete info. Keep the row and retry next cycle.
+            if (sawTeammateError) {
+                return 'kept';
+            }
+
+            // Positive confirmation: anchor + all probed teammates are cleanly inactive.
+            // Raid ended — enqueue the full fireteam and remove the row.
             enqueueEndedSession(session);
             deleteActiveSessionForPlayer(session.membership_id);
-            return false;
+            return 'removed';
         }
     );
 
     let refreshed = 0;
     let removed = 0;
+    let kept = 0;
     for (const result of results) {
         if (!result.success) {
             if (isBungieSystemDisabledError(result.error)) {
@@ -360,10 +393,12 @@ export async function refreshStaleSessionsWithOptions(options?: {
             }
             continue;
         }
-        if (result.result) {
+        if (result.result === 'refreshed') {
             refreshed++;
-        } else {
+        } else if (result.result === 'removed') {
             removed++;
+        } else {
+            kept++;
         }
     }
 
@@ -377,7 +412,7 @@ export async function refreshStaleSessionsWithOptions(options?: {
         removed += ancientDeleted.changes;
     }
 
-    console.log(`[SESSIONS] Re-verification complete: ${refreshed} refreshed, ${removed} removed`);
+    console.log(`[SESSIONS] Re-verification complete: ${refreshed} refreshed, ${removed} removed, ${kept} kept (no signal)`);
 
     return { refreshed, removed };
 }
@@ -538,6 +573,13 @@ export async function pollActiveSessions(
                 return result.session;
             }
 
+            // Transient failure (timeout / 5xx): no signal. Leave the player's session-poll
+            // eligibility untouched so the next cycle retries them, instead of benching a
+            // possibly-live raider on offline backoff (up to ~16 min) during a Bungie storm.
+            if (result.status === 'error') {
+                return null;
+            }
+
             recordSessionCheck(
                 player.membershipId,
                 result.status === 'privacyRestricted' ? 'privacy' : 'offline'
@@ -619,19 +661,28 @@ export async function resolveUnknownPartyMembers(
     const unknown = uniqueIds.filter((id) => !known.has(id)).slice(0, limit);
     if (unknown.length === 0) return 0;
 
-    let resolved = 0;
-    for (const membershipId of unknown) {
-        try {
+    const results = await processWithConcurrency(
+        unknown,
+        DEFAULT_MEMBER_RESOLVE_CONCURRENCY,
+        async (membershipId): Promise<boolean> => {
             const response = await client.getLinkedProfiles(membershipId);
             const player = pickPrimaryLinkedProfile(response.Response, membershipId);
             if (player) {
                 upsertPlayer(player);
-                resolved++;
+                return true;
             }
-        } catch (error) {
-            if (isBungieSystemDisabledError(error)) throw error;
-            // Private/deleted/unresolvable — leave the membership-id fallback in place.
+            return false;
         }
+    );
+
+    let resolved = 0;
+    for (const result of results) {
+        if (!result.success) {
+            if (isBungieSystemDisabledError(result.error)) throw result.error;
+            // Private/deleted/unresolvable — leave the membership-id fallback in place.
+            continue;
+        }
+        if (result.result) resolved++;
     }
 
     if (resolved > 0) {

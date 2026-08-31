@@ -8,13 +8,30 @@ import { withCache, withNoStore } from '@/lib/http/cache';
 export async function GET() {
     try {
         const stats = getStatusStats();
-        const stale = (stats.secondsSinceHeartbeat ?? 301) > 300; // 5 minutes
+        const crawlHeartbeatStale = (stats.secondsSinceHeartbeat ?? 301) > 300; // 5 minutes
+
+        // Session loop is degraded when no poll has *completed* within the configured window.
+        // Default 15 min sits above one 10-min watchdog cycle, so a single trip doesn't flip
+        // the verdict but a persistent hang does. null (no poll has ever completed yet, e.g.
+        // fresh start) is treated as not-degraded to avoid false alarms during warm-up.
+        const sessionStaleSec = Math.max(
+            60,
+            parseInt(process.env.SESSION_HEARTBEAT_STALE_SEC || '900', 10)
+        );
+        const sessionHeartbeatStale =
+            stats.secondsSinceSessionHeartbeat !== null &&
+            stats.secondsSinceSessionHeartbeat > sessionStaleSec;
+
+        const stale = crawlHeartbeatStale || sessionHeartbeatStale;
 
         const response = NextResponse.json(
             {
                 crawlerRunning: stats.crawlerRunning,
                 crawlerStatus: stats.crawlerStatus,
                 secondsSinceHeartbeat: stats.secondsSinceHeartbeat,
+                secondsSinceSessionHeartbeat: stats.secondsSinceSessionHeartbeat,
+                sessionWatchdogTrips: stats.sessionWatchdogTrips,
+                sessionHeartbeatStale,
                 scannerRunning: stats.scanner?.isRunning ?? false,
                 scannerStatus: stats.scanner ? 'available' : 'unknown',
                 bungieMaintenanceActive: stats.bungieMaintenanceActive,
@@ -44,6 +61,8 @@ export async function GET() {
                 crawlerRunning: stats?.crawlerRunning ?? false,
                 crawlerStatus: stats?.crawlerStatus ?? 'maintenance',
                 secondsSinceHeartbeat: stats?.secondsSinceHeartbeat ?? null,
+                secondsSinceSessionHeartbeat: stats?.secondsSinceSessionHeartbeat ?? null,
+                sessionWatchdogTrips: stats?.sessionWatchdogTrips ?? 0,
                 scannerRunning: stats?.scanner?.isRunning ?? false,
                 scannerStatus: stats?.scanner ? 'snapshot' : 'maintenance',
                 bungieMaintenanceActive: maintenance.active,

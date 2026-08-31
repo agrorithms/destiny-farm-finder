@@ -43,6 +43,35 @@ function writeCrawlerStatus(status: string): void {
   `).run(status);
 }
 
+// Written only when an active-session poll *completes* within its watchdog budget.
+// Anchoring the heartbeat to completion (not start) means a stale value proves polls
+// aren't finishing — the exact pathology — even while the watchdog keeps restarting
+// the loop. Consumed by getCrawlerStatus → /api/status health verdict + admin stats.
+function writeSessionHeartbeat(): void {
+    const db = getDb();
+    db.prepare(`
+    INSERT INTO crawler_state (key, value, updated_at)
+    VALUES ('session_heartbeat', ?, unixepoch())
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = unixepoch()
+  `).run(new Date().toISOString());
+}
+
+// Monotonic counter of watchdog trips (a poll abandoned for exceeding its time budget).
+// The postmortem breadcrumb: a jump here means Bungie requests are hanging past their
+// fetch timeout. value is TEXT, so increment via CAST.
+function incrementSessionWatchdogTrips(): void {
+    const db = getDb();
+    db.prepare(`
+    INSERT INTO crawler_state (key, value, updated_at)
+    VALUES ('session_watchdog_trips', '1', unixepoch())
+    ON CONFLICT(key) DO UPDATE SET
+      value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+      updated_at = unixepoch()
+  `).run();
+}
+
 export interface CrawlerConfig {
     intervalMs: number;
     maxPlayersPerCycle: number;
@@ -128,6 +157,25 @@ const DEFAULT_CONFIG: CrawlerConfig = {
 let isRunning = false;
 let shouldStop = false;
 const activeSessionInitialDelayMs = parseInt(process.env.CRAWLER_ACTIVE_SESSION_INITIAL_DELAY_MS || '30000', 10);
+
+// Hard ceiling on a single active-session poll. A rare Bungie request can hang past its
+// own fetch timeout with no backstop; without this, one hung request parks the whole
+// session loop indefinitely (observed: overnight stalls) while the PGCR crawler keeps
+// running. On expiry we abandon the in-flight poll and reschedule — the orphaned work is
+// left to settle (Option A). Comfortably above a healthy poll (~3.5 min) to avoid killing
+// legitimately-slow-but-progressing cycles and stacking overlapping polls.
+const activeSessionPollWatchdogMs = Math.max(
+    1000,
+    parseInt(process.env.ACTIVE_SESSION_POLL_WATCHDOG_MS || '600000', 10) // 10 minutes
+);
+
+// Sentinel used to distinguish a watchdog expiry from a genuine poll error in the catch.
+class PollWatchdogError extends Error {
+    constructor(ms: number) {
+        super(`Active session poll exceeded watchdog budget (${ms}ms)`);
+        this.name = 'PollWatchdogError';
+    }
+}
 
 interface CrawlTask {
     player: PlayerInfo;
@@ -434,64 +482,106 @@ export async function startCrawler(overrides?: Partial<CrawlerConfig>): Promise<
         setTimeout(crawlLoop, waitTime);
     }
 
-    // Active session polling loop (separate interval)
+    // Active session polling loop (separate interval).
+    //
+    // Reschedule lives in `finally`, guarded by shouldStop/enable, so the loop can never
+    // die silently: no matter what throws — including the watchdog, a DB error, or the
+    // maintenance-wait itself (now inside the try) — the next poll is always scheduled.
+    // Exactly one reschedule per live iteration. The top-of-function return is the only
+    // path that skips `finally` (clean stop → no reschedule).
     async function activeSessionLoop() {
         if (shouldStop || !config.enableActiveSessionPolling) return;
 
         const startTime = Date.now();
-        const resumedAfterMaintenance = await waitForBungieMaintenancePause('active session poll', () => shouldStop);
-        if (shouldStop || !config.enableActiveSessionPolling) return;
-        if (resumedAfterMaintenance) {
-            console.log('[SESSIONS] Resuming active session polling after Bungie maintenance pause.');
-        }
-
-        console.log(`\n👁️ Polling active sessions...`);
+        let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
 
         try {
-            const players = getPlayersForSessionPolling(config.sessionPollingLimit);
-            console.log(`[SESSIONS] Checking ${players.length} recently active players...`);
-            const sessions = await pollActiveSessions(players, config.sessionPollingLimit, {
-                playerCheckConcurrency: config.activeSessionConcurrency,
-                staleCheckConcurrency: config.activeSessionStaleConcurrency,
-                staleReverifyLimit: config.activeSessionStaleReverifyLimit,
-            });
-
-            // Log summary by raid and record a snapshot for the session history endpoint.
-            const raidBreakdown: Record<string, { fireteams: number; players: number }> = {};
-            const raidNames = new Map<string, string>();
-            for (const session of sessions) {
-                const entry = raidBreakdown[session.raidKey] ?? { fireteams: 0, players: 0 };
-                entry.fireteams += 1;
-                entry.players += session.playerCount;
-                raidBreakdown[session.raidKey] = entry;
-                raidNames.set(session.raidKey, session.raidName);
-            }
-            for (const [raidKey, counts] of Object.entries(raidBreakdown)) {
-                console.log(`  🎮 ${raidNames.get(raidKey) ?? raidKey}: ${counts.fireteams} fireteams, ${counts.players} players`);
+            // Single maintenance-wait location. If it throws, `catch` handles it and
+            // `finally` still reschedules (previously this sat outside the try — the
+            // silent-death path).
+            const resumedAfterMaintenance = await waitForBungieMaintenancePause('active session poll', () => shouldStop);
+            if (shouldStop || !config.enableActiveSessionPolling) return;
+            if (resumedAfterMaintenance) {
+                console.log('[SESSIONS] Resuming active session polling after Bungie maintenance pause.');
             }
 
-            recordSessionSnapshot({
-                totalFireteams: sessions.length,
-                totalPlayers: sessions.reduce((sum, s) => sum + s.playerCount, 0),
-                raidBreakdown,
+            console.log(`\n👁️ Polling active sessions...`);
+
+            // The whole poll body (candidate checks + stale re-verify + member resolution)
+            // races the watchdog. If a single hung Bungie request stalls it past the budget,
+            // the watchdog wins and we abandon this poll rather than parking the loop.
+            const pollWork = (async () => {
+                const players = getPlayersForSessionPolling(config.sessionPollingLimit);
+                console.log(`[SESSIONS] Checking ${players.length} recently active players...`);
+                const sessions = await pollActiveSessions(players, config.sessionPollingLimit, {
+                    playerCheckConcurrency: config.activeSessionConcurrency,
+                    staleCheckConcurrency: config.activeSessionStaleConcurrency,
+                    staleReverifyLimit: config.activeSessionStaleReverifyLimit,
+                });
+
+                // Log summary by raid and record a snapshot for the session history endpoint.
+                const raidBreakdown: Record<string, { fireteams: number; players: number }> = {};
+                const raidNames = new Map<string, string>();
+                for (const session of sessions) {
+                    const entry = raidBreakdown[session.raidKey] ?? { fireteams: 0, players: 0 };
+                    entry.fireteams += 1;
+                    entry.players += session.playerCount;
+                    raidBreakdown[session.raidKey] = entry;
+                    raidNames.set(session.raidKey, session.raidName);
+                }
+                for (const [raidKey, counts] of Object.entries(raidBreakdown)) {
+                    console.log(`  🎮 ${raidNames.get(raidKey) ?? raidKey}: ${counts.fireteams} fireteams, ${counts.players} players`);
+                }
+
+                recordSessionSnapshot({
+                    totalFireteams: sessions.length,
+                    totalPlayers: sessions.reduce((sum, s) => sum + s.playerCount, 0),
+                    raidBreakdown,
+                });
+
+                // Resolve fireteam members not yet in the players table so their cards show
+                // Name#Code instead of a raw membership id (capped per cycle).
+                await resolveUnknownPartyMembers(collectPartyMemberIds(sessions));
+            })();
+
+            // Promise.race attaches reactions to BOTH promises, so if the abandoned pollWork
+            // later settles (or stays pending — the accepted Option A leak of one hung
+            // request), there is no unhandledRejection.
+            const watchdog = new Promise<never>((_, reject) => {
+                watchdogTimer = setTimeout(
+                    () => reject(new PollWatchdogError(activeSessionPollWatchdogMs)),
+                    activeSessionPollWatchdogMs
+                );
             });
 
-            // Resolve fireteam members not yet in the players table so their cards show
-            // Name#Code instead of a raw membership id (capped per cycle).
-            await resolveUnknownPartyMembers(collectPartyMemberIds(sessions));
+            await Promise.race([pollWork, watchdog]);
+
+            // Completed within budget — record liveness for the health verdict.
+            writeSessionHeartbeat();
         } catch (error) {
-            if (isBungieSystemDisabledError(error)) {
+            if (error instanceof PollWatchdogError) {
+                incrementSessionWatchdogTrips();
+                console.warn(
+                    `⚠️ [SESSIONS] Poll exceeded ${(activeSessionPollWatchdogMs / 1000).toFixed(0)}s watchdog — ` +
+                    `abandoning this cycle and rescheduling. A Bungie request likely hung past its fetch timeout; ` +
+                    `the orphaned work is left to settle.`
+                );
+            } else if (isBungieSystemDisabledError(error)) {
+                // Record-only: the next iteration's top-of-try maintenance wait blocks until
+                // it clears. Keeps a single maintenance-wait path and out of the error branch.
                 recordBungieMaintenancePause('active session poll');
-                await waitForBungieMaintenancePause('active session poll', () => shouldStop);
             } else {
                 console.error('❌ Active session poll error:', error);
             }
+        } finally {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            if (!shouldStop && config.enableActiveSessionPolling) {
+                const elapsed = Date.now() - startTime;
+                const waitTime = Math.max(0, config.activeSessionIntervalMs - elapsed);
+                console.log(`[SESSIONS] Poll took ${(elapsed / 1000).toFixed(1)}s, waiting ${(waitTime / 1000).toFixed(1)}s`);
+                setTimeout(activeSessionLoop, waitTime);
+            }
         }
-
-        const elapsed = Date.now() - startTime;
-        const waitTime = Math.max(0, config.activeSessionIntervalMs - elapsed);
-        console.log(`[SESSIONS] Poll took ${(elapsed / 1000).toFixed(1)}s, waiting ${(waitTime / 1000).toFixed(1)}s`);
-        setTimeout(activeSessionLoop, waitTime);
     }
 
     // Cleanup loop. Deletes expired PGCRs in small per-batch transactions with a yield
