@@ -52,6 +52,19 @@ export default function RaidMultiSelect({ raids, selected, onChange }: RaidMulti
     useEffect(() => {
         if (!isOpen) return;
         function handleFocusOut(event: FocusEvent) {
+            // A null relatedTarget means focus went nowhere, not that it left the
+            // dropdown. WebKit does not focus a <button> on tap, and Chrome and Edge
+            // on iOS are both WKWebView, so tapping Select All or Clear Filter blurred
+            // the listbox with no relatedTarget. Closing here unmounted the button
+            // before its click dispatched: the dropdown shut and nothing was selected.
+            //
+            // Preventing default on the buttons' mousedown would also stop the blur,
+            // but chromium focuses buttons on tap and so cannot test it — one fix that
+            // a test can prove beats two where only one is verifiable.
+            //
+            // Deliberate consequence: focus leaving the window no longer closes the
+            // dropdown. Click-outside and Escape still dismiss it.
+            if (!event.relatedTarget) return;
             if (dropdownRef.current && !dropdownRef.current.contains(event.relatedTarget as Node)) {
                 setIsOpen(false);
                 setFocusedIndex(-1);
