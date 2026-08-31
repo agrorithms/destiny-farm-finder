@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './support/test-fixtures';
 import { RAID_A, RAID_B } from './support/seed-world';
 
@@ -22,6 +22,20 @@ const RAID_B_PLAYER = 'FixtureDelta#2222';
 async function selectRaid(page: Page, raidName: string): Promise<void> {
     await page.getByRole('button', { name: 'All Raids' }).click();
     await page.getByRole('option', { name: raidName }).click();
+}
+
+/**
+ * Asserts every raid option in the open dropdown. Scoped to the listbox — the
+ * page's other controls are native <select>s, whose <option> elements carry the
+ * same role and would otherwise be swept into this locator.
+ */
+async function expectEveryOptionSelected(listbox: Locator, ariaSelected: 'true' | 'false'): Promise<void> {
+    const options = listbox.getByRole('option');
+    const optionCount = await options.count();
+    expect(optionCount).toBeGreaterThan(0);
+    for (let i = 0; i < optionCount; i++) {
+        await expect(options.nth(i)).toHaveAttribute('aria-selected', ariaSelected);
+    }
 }
 
 test.describe('leaderboard', () => {
@@ -111,5 +125,50 @@ test.describe('leaderboard', () => {
         await expect(listbox).toBeFocused();
         await page.keyboard.press('Tab');
         await expect(listbox).not.toBeVisible();
+    });
+
+    /**
+     * Regression: the Select All / Clear Filter buttons did nothing on iOS.
+     *
+     * WebKit does not focus a <button> on tap, and Chrome and Edge on iOS are both
+     * WKWebView. So tapping either utility button blurred the listbox with a null
+     * relatedTarget; RaidMultiSelect's focusout handler read that as "focus left the
+     * dropdown", closed it, and React unmounted the button before its click could
+     * dispatch. The dropdown shut and the selection never changed.
+     *
+     * Chromium focuses buttons on mousedown, so it cannot reproduce the tap itself.
+     * The blur() below produces the event the tap actually produced — a real
+     * focusout carrying no relatedTarget — which is the trigger the handler got
+     * wrong. Treat this as a proxy for WebKit's focus semantics, not a reproduction
+     * of them: iOS stays unverified here until a webkit project lands.
+     */
+    test('utility buttons still act when the listbox blurs to nothing', async ({ page }) => {
+        await page.goto('/leaderboard');
+
+        await page.getByRole('button', { name: 'All Raids' }).click();
+        const listbox = page.getByRole('listbox');
+        await expect(listbox).toBeVisible();
+
+        // Opening focuses the listbox, so this is a genuine focusout to nowhere —
+        // exactly what the iOS tap delivered before the click landed.
+        await listbox.evaluate((el: HTMLElement) => el.blur());
+
+        // Half one of the reported symptom: the dropdown must not close.
+        await expect(listbox).toBeVisible();
+
+        await page.getByRole('button', { name: 'Select All' }).click();
+
+        // Half two: the change must actually be made — and the dropdown must still
+        // be open afterwards, which is the symptom as reported ("the filter dropdown
+        // closes, but the change is not actually made"). Asserted after the click as
+        // well as after the blur, because those are two different close paths.
+        await expect(listbox).toBeVisible();
+        await expectEveryOptionSelected(listbox, 'true');
+
+        // Clear Filter is the same code path, and the one a user reaches for to
+        // undo the above — assert it too rather than trusting the shared handler.
+        await page.getByRole('button', { name: 'Clear Filter' }).click();
+        await expect(listbox).toBeVisible();
+        await expectEveryOptionSelected(listbox, 'false');
     });
 });
