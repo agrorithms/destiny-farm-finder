@@ -20,3 +20,7 @@ differs.
   bites, and is not a bug to be "fixed" by capping the count.
 - The server logs a warning whenever the cap bites, since the default (600) sits close to observed
   prod volume and the gap would otherwise be invisible.
+- The StatsBar counts link to `/leaderboard` and `/active-sessions` without carrying a time range or
+  clearing raid filters. The destination honours whatever view the user saved, so the same expected
+  discrepancy extends to navigation: clicking "full clears · last 24h" can land a reader on their
+  own saved 7-day board, and that is not a broken link.

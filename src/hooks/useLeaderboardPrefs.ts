@@ -7,7 +7,14 @@ const VIEW_MODE_KEY = 'destiny-farm-finder-view-mode';
 const TIME_RANGE_KEY = 'destiny-farm-finder-time-range';
 const LEADERBOARD_SIZE_KEY = 'destiny-farm-finder-leaderboard-size';
 const PROFILE_COMPLETIONS_PAGE_SIZE_KEY = 'destiny-farm-finder-profile-completions-page-size';
+const DIFFICULTY_FILTER_KEY = 'destiny-farm-finder-difficulty-filter';
+const PLAYERS_FILTER_KEY = 'destiny-farm-finder-players-filter';
 const LEADERBOARD_SIZE_OPTIONS = [6, 12, 25, 50, 75, 100] as const;
+
+export type DifficultyFilter = '' | 'normal' | 'master';
+export type PlayersFilter = '' | '1' | '2' | '3' | 'lowman';
+const VALID_DIFFICULTY: DifficultyFilter[] = ['', 'normal', 'master'];
+const VALID_PLAYERS: PlayersFilter[] = ['', '1', '2', '3', 'lowman'];
 export const PROFILE_COMPLETIONS_PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
 /**
@@ -151,4 +158,38 @@ export function useProfileCompletionsPageSize(): [number, (size: number) => void
     }, []);
 
     return [size, setPageSize];
+}
+
+export function useDifficultyFilter(): [DifficultyFilter, (v: DifficultyFilter) => void] {
+    const [value, setValue] = useState<DifficultyFilter>(() => {
+        if (typeof window === 'undefined') return '';
+        try {
+            const stored = localStorage.getItem(DIFFICULTY_FILTER_KEY);
+            if (VALID_DIFFICULTY.includes(stored as DifficultyFilter)) return stored as DifficultyFilter;
+        } catch { /* ignore */ }
+        return '';
+    });
+
+    useEffect(() => {
+        try { localStorage.setItem(DIFFICULTY_FILTER_KEY, value); } catch { /* ignore */ }
+    }, [value]);
+
+    return [value, setValue];
+}
+
+export function usePlayersFilter(): [PlayersFilter, (v: PlayersFilter) => void] {
+    const [value, setValue] = useState<PlayersFilter>(() => {
+        if (typeof window === 'undefined') return '';
+        try {
+            const stored = localStorage.getItem(PLAYERS_FILTER_KEY);
+            if (VALID_PLAYERS.includes(stored as PlayersFilter)) return stored as PlayersFilter;
+        } catch { /* ignore */ }
+        return '';
+    });
+
+    useEffect(() => {
+        try { localStorage.setItem(PLAYERS_FILTER_KEY, value); } catch { /* ignore */ }
+    }, [value]);
+
+    return [value, setValue];
 }

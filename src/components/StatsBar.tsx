@@ -1,8 +1,18 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { usePageLiveStatus } from '@/hooks/usePageLiveStatus';
 import { useLiveStats, LIVE_STATS_POLL_INTERVAL_MS } from '@/hooks/useLiveStats';
+import { selectFreshness } from './freshness';
+
+// The counts link to the pages they summarise, but deliberately carry no styling
+// of their own: colour, weight and underline all inherit, so the strip looks
+// identical and the link is only there for whoever clicks or taps it. The
+// focus-visible ring is the one exception — it fires for keyboard navigation
+// only, which mouse and touch users never see.
+const STAT_LINK_CLASS =
+    'flex items-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ui-accent)]';
 
 function formatSecondsAgo(seconds: number | null): string {
     if (seconds === null) return 'never';
@@ -68,6 +78,16 @@ export default function StatsBar() {
 
     const refreshSec = pageStatus?.refreshIntervalSec ?? LIVE_STATS_POLL_INTERVAL_MS / 1000;
 
+    // Note the asymmetry: the page clock ticks locally every second, while the
+    // data clock is a server snapshot refreshed only once per poll — so the
+    // stale reading is rendered as-is rather than counted up. Inventing seconds
+    // between polls would be fiction, and at this age they carry no information.
+    const freshness = selectFreshness({
+        live: stats?.live ?? false,
+        secondsSinceHeartbeat: stats?.secondsSinceHeartbeat ?? null,
+        secondsSincePageUpdate: updatedAtMs === null ? null : secondsAgo,
+    });
+
     const liveLabel = stats?.maintenance
         ? 'Maintenance'
         : stats?.live
@@ -94,25 +114,31 @@ export default function StatsBar() {
                             <span className={stats.live ? 'ui-text-secondary font-medium' : ''}>{liveLabel}</span>
                         </div>
                         <span className="ui-text-subtle" aria-hidden="true">·</span>
-                        <div className="flex items-center gap-1">
+                        <Link href="/leaderboard" className={STAT_LINK_CLASS} title="View the leaderboard">
                             <StatNumber value={stats.fullClears24h} flashStamp={flashStamps.clears} />
                             <span className="hidden sm:inline">full clears · last 24h</span>
                             <span className="sm:hidden">clears</span>
-                        </div>
+                        </Link>
                         <span className="ui-text-subtle" aria-hidden="true">·</span>
-                        <div className="flex items-center gap-1">
+                        <Link href="/active-sessions" className={STAT_LINK_CLASS} title="View the fireteams raiding now">
                             <StatNumber value={stats.activeRaidSessions} flashStamp={flashStamps.sessions} />
                             <span className="hidden sm:inline">
                                 {stats.activeRaidSessions === 1 ? 'fireteam' : 'fireteams'} raiding now
                             </span>
                             <span className="sm:hidden">raiding</span>
-                        </div>
-                        {updatedAtMs !== null && (
+                        </Link>
+                        {freshness.kind !== 'none' && (
                             <>
                                 <span className="ui-text-subtle" aria-hidden="true">·</span>
-                                <span title={`Auto-refreshes every ${refreshSec}s`}>
-                                    <span className="hidden sm:inline">Updated {formatSecondsAgo(secondsAgo)}</span>
-                                    <span className="sm:hidden">{formatSecondsShort(secondsAgo)}</span>
+                                {/* The stale slot reuses the live dot's tooltip: same number, same
+                                    sentence, so they can never drift into disagreeing. */}
+                                <span title={freshness.kind === 'page' ? `Auto-refreshes every ${refreshSec}s` : liveTitle}>
+                                    <span className="hidden sm:inline">
+                                        {freshness.kind === 'page'
+                                            ? `Updated ${formatSecondsAgo(freshness.seconds)}`
+                                            : `Data ${formatSecondsShort(freshness.seconds)} old`}
+                                    </span>
+                                    <span className="sm:hidden">{formatSecondsShort(freshness.seconds)}</span>
                                 </span>
                             </>
                         )}

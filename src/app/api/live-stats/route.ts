@@ -6,8 +6,9 @@ import { getBungieMaintenanceStatus } from '@/lib/bungie/maintenance';
 import { withCache, withNoStore } from '@/lib/http/cache';
 
 // Informational feed for the StatsBar — always 200, never a health check (/api/status owns that).
-// Also carries the maintenance flags and heartbeat consumed by FooterStatus and
-// BungieMaintenanceAlert, so browser tabs poll this single endpoint.
+// Also carries the maintenance flags and the heartbeat the StatsBar falls back to
+// when the crawler goes stale, plus what BungieMaintenanceAlert needs, so browser
+// tabs poll this single endpoint.
 
 interface LiveStatsPayload {
     live: boolean;

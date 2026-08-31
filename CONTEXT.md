@@ -50,6 +50,21 @@ characters they brought to it. The unit every leaderboard ranks by. A player bei
 cleared raid is not enough — they must have finished it themselves.
 _Avoid_: clear, kill, run
 
+**Heartbeat**:
+The crawler's periodic signal that it is still observing. Its age is the Data Freshness; once it
+lapses, the site reports itself as no longer live.
+_Avoid_: ping, health check, status
+
+**Data Freshness**:
+How long ago the crawler last confirmed it was working — the age of what the site knows. The only
+freshness that says anything about whether a leaderboard or an active session can be trusted.
+_Avoid_: last updated, uptime
+
+**Page Freshness**:
+How long ago a browser tab last fetched — the age of what is on screen. Says nothing about whether
+the data behind it is current: a tab can be seconds old and still be displaying hours-old data.
+_Avoid_: last updated, refresh time
+
 **Farm**:
 Repeatedly replaying a single raid encounter or checkpoint for rewards, rather than progressing
 through the raid. The activity the site is named for.

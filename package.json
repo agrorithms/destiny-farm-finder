@@ -2,6 +2,9 @@
   "name": "destiny-farm-finder",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.15"
+  },
   "scripts": {
     "dev": "next dev",
     "next-build": "next build",
@@ -29,6 +32,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "e2e": "NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY=e2e-not-a-real-bungie-key npm run next-build && playwright test",
+    "e2e:nobuild": "playwright test",
     "e2e:maintenance": "npx tsx scripts/test-maintenance-cycle.ts",
     "capture-fixtures": "npx tsx scripts/capture-pgcr-fixture.ts",
     "find-private": "npx tsx scripts/find-private-session-players.ts"
@@ -42,6 +47,7 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",

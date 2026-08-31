@@ -60,7 +60,51 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
         || (error instanceof Error && error.name === 'DatabaseMaintenanceError');
 }
 
+/**
+ * Refuses to open anything but a throwaway database while running under a test
+ * runner — Vitest (VITEST) or the Playwright e2e suite (DFF_E2E).
+ *
+ * DB_PATH above is resolved at *import* time, so whichever import comes first
+ * freezes it for the process. Tests win that race only because
+ * tests/setup/test-db-path.ts runs as a Vitest setupFile, ahead of any test
+ * file's imports. If that ordering is ever broken — setupFiles reordered, the
+ * setup file turned into a helper, a config without setupFiles — DB_PATH
+ * silently becomes the real database and the suite's DELETE/VACUUM paths operate
+ * on live data. Nothing would error. This turns that into a hard failure.
+ *
+ * The e2e suite mints its own path in e2e/support/fixture-db.ts and sets both
+ * env vars, because tests/setup/test-db-path.ts imports from `vitest` and cannot
+ * be reused. Two processes must receive them there — the seeder and the
+ * `next start` child — so this check alone is not sufficient for e2e: it is
+ * opt-in by env, and cannot fire if the env never arrives. That gap is closed
+ * separately by a fail-fast in playwright.config.ts and by the canary check in
+ * e2e/support/canary.setup.ts, which observes which database the running server
+ * actually opened. See docs/adr/0003.
+ *
+ * Yes, this means src/ contains a branch that only exists for tests, which is
+ * the sort of thing ADR 0004 is otherwise suspicious of. It is a precondition
+ * check, not a mock: it substitutes no behaviour, so it cannot make a failing
+ * test pass — its only effect is aborting a run whose configuration is already
+ * wrong. Rails' ProtectedEnvironmentError makes the same trade. Please don't
+ * delete it as a smell; see docs/adr/0003 and 0004.
+ */
+function assertDbPathAllowed(): void {
+    const runner = process.env.VITEST ? 'Vitest' : process.env.DFF_E2E ? 'the e2e suite' : null;
+    if (!runner) return;
+
+    const allowed = process.env.DFF_TEST_DB_SENTINEL;
+    if (!allowed || DB_PATH !== path.resolve(allowed)) {
+        throw new Error(
+            `Refusing to open ${DB_PATH} under ${runner} — it is not the throwaway database ` +
+            `named by DFF_TEST_DB_SENTINEL. Either the setup that mints it did not run, or ` +
+            `something imported src/lib/db before it did.`
+        );
+    }
+}
+
 export function getDb(): Database.Database {
+    assertDbPathAllowed();
+
     if (isDbQuiesceActive()) {
         closeDb();
         throw new DatabaseMaintenanceError();
@@ -92,6 +136,9 @@ export function closeDb(): void {
 }
 
 export function openMaintenanceDb(): Database.Database {
+    // Deliberately NOT behind assertDbPathAllowed(): nothing in the test suite
+    // reaches this today. If you write a test that does, add the call — this
+    // opens a raw connection and its callers VACUUM through it.
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
     const db = new Database(DB_PATH);
     configureDatabase(db);

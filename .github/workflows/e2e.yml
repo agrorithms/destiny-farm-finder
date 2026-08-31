@@ -1,0 +1,95 @@
+name: e2e
+
+# The Playwright browser suite. Deliberately NOT part of test.yml, whose
+# contract is "fast, hermetic, per-push" — this one builds the app, boots a
+# real `next start` and drives Chromium, which is minutes rather than seconds.
+#
+# `pull_request` only, never `push`: on a PR branch both triggers fire and the
+# suite would run twice for one change. `workflow_dispatch` is the pre-deploy
+# ritual — given ~5 visitors/day and a deploy-to-prod-to-test workflow, that is
+# arguably the more valuable of the two.
+#
+# This job is intended to REPORT, not to gate. `main` currently has no branch
+# protection at all, so that holds trivially — but note the corollary: promoting
+# this to a required check later means creating a ruleset from scratch, not
+# flipping a toggle on an existing one.
+#
+# `workflow_dispatch` is not dispatchable until this file is on the default
+# branch, so the pre-deploy-ritual half stays inert until this branch merges.
+#
+# Same architecture caveat as test.yml: this runs on x86_64 while production is
+# ARM64 (Oracle A1 Flex), and better-sqlite3 is a native module.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A rapid series of pushes to a PR should not stack runs of a minutes-long job.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # playwright.config.ts gives `next start` 60s to boot, but a run that hangs
+    # after boot has no ceiling of its own. See §3 item 7 of
+    # docs/handoffs/260803-playwright-e2e.md — an orphaned server on port 3100
+    # is a known unguarded failure mode locally too.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `ci`, not `install`, for the same reason as test.yml: the lockfile is
+      # the source of truth for deployments.
+      - run: npm ci
+
+      # Only Chromium — playwright.config.ts has exactly one non-canary project
+      # (Desktop Chrome). Uncached on purpose: ~40s against a job that already
+      # spends longer than that on the build, and a browser cache keyed on the
+      # wrong thing yields a Chromium that does not match the driver.
+      - run: npx playwright install --with-deps chromium
+
+      # lint and `tsc --noEmit` are NOT repeated here — test.yml already runs
+      # both on pull_request. A red job here therefore means a browser flow
+      # broke, unambiguously.
+
+      # A separate step from the test run so a build failure reads as a build
+      # failure rather than as a server that failed to start.
+      - name: Build
+        run: npm run next-build
+        env:
+          # Next inlines NEXT_PUBLIC_* at BUILD time, so this has to be here and
+          # not on the test step. Without it the two client-write specs fail
+          # before making a request: getPublicApiKey()
+          # (src/lib/bungie/client-api.ts) throws on a missing key, and there is
+          # no .env on a runner.
+          #
+          # A fake value is correct. Every bungie.net request is answered by the
+          # page.route interceptor in e2e/support/test-fixtures.ts and never
+          # leaves the process, so only non-emptiness is load-bearing — which is
+          # also why this literal matching package.json's `e2e` script is a
+          # convenience, not a constraint. Tests that genuinely reach Bungie are
+          # tagged @live and excluded by grepInvert (issue #25).
+          NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY: e2e-not-a-real-bungie-key
+
+      # `npx playwright test`, not `npm run e2e` — that script rebuilds, and the
+      # build already happened above.
+      - name: Run Playwright
+        run: npx playwright test
+
+      # trace: 'on-first-retry' plus retries: 2 in CI means a failure that
+      # survives its retries has left a trace behind. Without this upload it is
+      # discarded with the runner.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7

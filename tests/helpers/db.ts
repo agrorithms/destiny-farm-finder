@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { getDb } from '@/lib/db';
+import { getDb } from '../../src/lib/db';
 
 /**
  * Access to the per-file test database.
@@ -31,5 +31,6 @@ export function resetTestDb(): void {
         DELETE FROM players;
         DELETE FROM active_sessions;
         DELETE FROM crawler_state;
+        DELETE FROM session_snapshots;
     `);
 }

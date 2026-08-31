@@ -1,9 +1,9 @@
-import { getDb } from '@/lib/db';
-import { insertFullPGCR, upsertPlayer } from '@/lib/db/queries';
-import { getRaidKeyFromHash } from '@/lib/bungie/manifest';
-import { processPGCR } from '@/lib/crawler/pgcr';
-import { readActivityDurationSeconds, readEntryStartSeconds } from '@/lib/bungie/pgcr-stats';
-import type { DestinyPostGameCarnageReportData } from '@/lib/bungie/types';
+import { getDb } from '../../src/lib/db';
+import { insertFullPGCR, upsertPlayer } from '../../src/lib/db/queries';
+import { getRaidKeyFromHash } from '../../src/lib/bungie/manifest';
+import { processPGCR } from '../../src/lib/crawler/pgcr';
+import { readActivityDurationSeconds, readEntryStartSeconds } from '../../src/lib/bungie/pgcr-stats';
+import type { DestinyPostGameCarnageReportData } from '../../src/lib/bungie/types';
 import { RAID_HASH } from './pgcr-builder';
 
 /**
@@ -36,6 +36,13 @@ export interface SeedRunOptions {
     activityDurationSeconds?: number | null;
     timePlayedSeconds?: number;
     startSeconds?: number | null;
+    /** Raw Bungie difficulty tier integer. */
+    difficultyTier?: number;
+    /** Count of distinct membership IDs across entries. */
+    uniquePlayerCount?: number;
+    kills?: number;
+    deaths?: number;
+    assists?: number;
 }
 
 /** Unix seconds, `hours` in the past. Runs are seeded relative to now because
@@ -57,6 +64,11 @@ export function seedRun(options: SeedRunOptions): void {
         activityDurationSeconds = 1800,
         timePlayedSeconds = 1800,
         startSeconds = 0,
+        difficultyTier,
+        uniquePlayerCount,
+        kills: memberKills = 100,
+        deaths: memberDeaths = 2,
+        assists: memberAssists = 40,
     } = options;
 
     const members = [
@@ -79,6 +91,8 @@ export function seedRun(options: SeedRunOptions): void {
             playerCount: members.length,
             source: 'test',
             activityDurationSeconds,
+            difficultyTier,
+            uniquePlayerCount,
         },
         members.map((member) => ({
             instanceId,
@@ -89,9 +103,9 @@ export function seedRun(options: SeedRunOptions): void {
             characterClass: 'Warlock',
             lightLevel: 2010,
             completed: member.completed,
-            kills: 100,
-            deaths: 2,
-            assists: 40,
+            kills: memberKills,
+            deaths: memberDeaths,
+            assists: memberAssists,
             timePlayedSeconds,
             startSeconds,
         }))
@@ -140,6 +154,8 @@ export function seedFromFixture(pgcr: DestinyPostGameCarnageReportData, source =
             playerCount: pgcr.entries.length,
             source,
             activityDurationSeconds: readActivityDurationSeconds(pgcr.entries),
+            difficultyTier: processed.difficultyTier,
+            uniquePlayerCount: processed.uniquePlayerCount,
         },
         pgcr.entries.map((entry) => ({
             instanceId: processed.instanceId,
