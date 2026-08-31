@@ -76,6 +76,19 @@ instead of two. Note the Full Clear CTE is *faster* than the `classDistribution`
 replaces: the cost tracks population size, not the window function. All Attempts is expensive
 because it ranks all 1.08M Player-Runs; Full Clear ranks a small fraction of them.
 
+**Amendment (2026-08-29), after the follow-up cleanup.** The table above measured only the two new
+CTEs against the two queries they replaced; the shipped endpoint also ran a scalar query and *two*
+`classDistribution` queries (one per scope), so the real cold-miss cost was higher than the 4.3 s
+row-sum suggests. The cleanup folded the class counts into each scope's CTE via `json_group_object`
+over the same `runs` population, marked `runs` as `MATERIALIZED` (SQLite was re-evaluating the
+`pgcrs` join once per CTE reference), precomputed the three nearest-rank positions in `totals`, and
+filtered the rank join to `r.rn IN (t.r25, t.r50, t.r75)`. Four statements became two, and the base
+join now runs once per scope instead of three times. Verified byte-identical output across all 25
+raid/scope pairs; measured on the 2026-08-23 backup (818 MB, 89,502 Player-Runs over 168h): Full
+Clear 91 ms → 61 ms, All Attempts 397 ms → 305 ms, both including the class counts. That database is
+~12x smaller than the one the table above was measured against, so read the ratio, not the absolute
+numbers — and the live figures in the table have not been re-measured since.
+
 The aggregate contributes almost none of this — it is three `SUM()`s over a CTE already being
 materialised. The sort is the cost: `ORDER BY kda` ranks a computed ratio, so SQLite cannot use the
 covering index `sqlite_autoindex_pgcr_players_1` that serves the current queries, and falls back to

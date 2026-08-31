@@ -55,17 +55,11 @@ export async function GET(request: NextRequest) {
 
         const body = {
             hours,
+            // RaidStatsRow is the wire contract; raidName is the only thing this layer adds.
+            // Which metrics respond to the scope toggle is documented by the nesting there.
             raids: rows.map(row => ({
-                raidKey: row.raidKey,
+                ...row,
                 raidName: raids[row.raidKey]?.name || row.raidKey,
-                // Outside the scope toggle: fastest clear is full-clear-only by definition,
-                // and dnfRate is 0 by construction under a full-clear scope.
-                fastestClearSeconds: row.fastestClearSeconds,
-                dnfRate: row.dnfRate,
-                instanceCount: row.instanceCount,
-                // The nesting is the documentation of which metrics respond to the toggle.
-                fullClear: row.fullClear,
-                allAttempts: row.allAttempts,
             })),
         };
 
