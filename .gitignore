@@ -86,3 +86,6 @@ docs/tickets/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+#gos10k
+/gos10k/*.db
