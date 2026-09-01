@@ -37,6 +37,7 @@ interface BungieEnvelope {
     ErrorCode?: number;
     ErrorStatus?: string;
     Message?: string;
+    ThrottleSeconds?: number;
     Response?: unknown;
 }
 
