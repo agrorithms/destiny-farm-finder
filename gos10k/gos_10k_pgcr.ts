@@ -46,6 +46,16 @@ const CONFIG = {
      */
     consecutiveFailureLimit: 25,
     progressEvery: 250,
+    /**
+     * PGCRs in flight at once.
+     *
+     * The loop is latency-bound, not budget-bound: a sequential pass measured
+     * ~2/s against a 24/s allowance, because each iteration waits a full Bungie
+     * round-trip (~450ms) before starting the next. Eight in flight fills that
+     * dead time and lands near the rate limiter's ceiling, which is where the
+     * limiter — not the network — becomes the thing that paces the run.
+     */
+    concurrency: 8,
 };
 
 // Resolved when the backfill actually runs, not at import time. Importing a
@@ -69,10 +79,16 @@ interface Options {
     limit: number | null;
     retryFailed: boolean;
     dbPath: string;
+    concurrency: number;
 }
 
 function parseArgs(argv: string[]): Options {
-    const opts: Options = { limit: null, retryFailed: false, dbPath: CONFIG.dbPath };
+    const opts: Options = {
+        limit: null,
+        retryFailed: false,
+        dbPath: CONFIG.dbPath,
+        concurrency: CONFIG.concurrency,
+    };
 
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
@@ -83,6 +99,13 @@ function parseArgs(argv: string[]): Options {
                 throw new Error(`--limit needs a positive integer, got "${raw}"`);
             }
             opts.limit = n;
+        } else if (arg === '--concurrency') {
+            const raw = argv[++i];
+            const n = Number(raw);
+            if (!Number.isInteger(n) || n <= 0) {
+                throw new Error(`--concurrency needs a positive integer, got "${raw}"`);
+            }
+            opts.concurrency = n;
         } else if (arg === '--retry-failed') {
             opts.retryFailed = true;
         } else if (arg === '--db') {
@@ -549,94 +572,150 @@ export async function backfill(options: Options): Promise<void> {
 
         let ok = 0;
         let failed = 0;
+        let completed = 0;
         let consecutiveFailures = 0;
         let duplicateCharacterEntries = 0;
         let malformedEntries = 0;
         const startedAt = Date.now();
 
-        for (const [index, { instance_id: instanceId }] of pending.entries()) {
-            const url = `https://www.bungie.net/Platform/Destiny2/Stats/PostGameCarnageReport/${instanceId}/`;
-            const { httpStatus, body } = await fetchRaw(url, headers);
-            const outcome = classifyPgcrOutcome(httpStatus, body);
+        // Set by the first worker to hit a fatal outcome. Workers check it
+        // before writing, so nothing lands after the decision to stop — those
+        // instances simply stay pending and a rerun picks them up.
+        let fatalError: Error | null = null;
+        // The shared queue cursor. Workers pull from it; `pending` is never
+        // mutated, so an interrupted run leaves no partially-consumed list.
+        let cursor = 0;
 
-            if (outcome.kind === 'fatal') {
-                // Stop rather than record. A maintenance window or a bad key is
-                // not a property of this instance, and writing it to the row
-                // would turn a five-minute outage into permanent-looking data.
-                throw new Error(
-                    `Aborting: ${outcome.status} on instance ${instanceId}. ` +
-                    `${ok} fetched this run; rerun to resume from here.`
-                );
-            }
+        // Guarded against a non-finite value, and not merely defensively: NaN
+        // survives Math.min/Math.max unchanged, Array.from({length: NaN}) builds
+        // an EMPTY array, and the run would then finish instantly having fetched
+        // nothing while reporting success. That is the silent stop the handoff
+        // warns about, reached without a single error.
+        const requested = Number.isInteger(options.concurrency) ? options.concurrency : 1;
+        const workerCount = Math.max(1, Math.min(requested, pending.length));
+        console.log(`Concurrency: ${workerCount} in flight, capped at ${CONFIG.maxRequestsPerSecond} rps.`);
 
-            if (outcome.kind === 'instance') {
-                statements.markRunFailed.run({
-                    instanceId,
-                    fetchedAt: Math.floor(Date.now() / 1000),
-                    status: outcome.status,
-                });
-                failed++;
-                consecutiveFailures++;
-                if (consecutiveFailures >= CONFIG.consecutiveFailureLimit) {
-                    throw new Error(
-                        `Aborting: ${consecutiveFailures} consecutive per-instance failures. ` +
-                        `That is the API, not the data. Last status: ${outcome.status}.`
+        /**
+         * One worker: pull an instance, fetch it, apply its writes, repeat.
+         *
+         * Fetch is the only awaited step. Everything after it — parse, gzip,
+         * transaction — is synchronous, and better-sqlite3 is a synchronous
+         * driver, so a worker holds the event loop for the whole write and no
+         * two workers can ever interleave inside a transaction. The concurrency
+         * here is concurrency in the *network*, which is the only place the time
+         * was going; the database stays strictly one-at-a-time.
+         */
+        async function worker(): Promise<void> {
+            for (;;) {
+                if (fatalError) return;
+
+                const index = cursor++;
+                if (index >= pending.length) return;
+                const instanceId = pending[index]!.instance_id;
+
+                const url = `https://www.bungie.net/Platform/Destiny2/Stats/PostGameCarnageReport/${instanceId}/`;
+                const { httpStatus, body } = await fetchRaw(url, headers);
+
+                // Re-check after the await: another worker may have aborted the
+                // run while this request was in flight.
+                if (fatalError) return;
+
+                const outcome = classifyPgcrOutcome(httpStatus, body);
+
+                if (outcome.kind === 'fatal') {
+                    // Stop rather than record. A maintenance window or a bad key
+                    // is not a property of this instance, and writing it to the
+                    // row would turn a five-minute outage into permanent-looking
+                    // data.
+                    fatalError = new Error(
+                        `Aborting: ${outcome.status} on instance ${instanceId}. ` +
+                        `${ok} fetched this run; rerun to resume from here.`
                     );
+                    return;
                 }
-                continue;
-            }
 
-            const response = body.Response as RawPgcrResponse;
-            const parsed = parsePgcr(response);
+                if (outcome.kind === 'instance') {
+                    recordFailure(instanceId, outcome.status);
+                    continue;
+                }
 
-            // Every row is keyed by the instance id inside the payload, so if
-            // Bungie ever returns a PGCR for a different instance than the one
-            // requested, the writes would target a row that does not exist: the
-            // UPDATE matches nothing, the player insert violates the FK, and the
-            // run reports a success that wrote no data. Checking costs one
-            // string compare and turns a silent no-op into a recorded status.
-            if (parsed.run.instanceId !== instanceId) {
-                statements.markRunFailed.run({
-                    instanceId,
-                    fetchedAt: Math.floor(Date.now() / 1000),
-                    status: 'id-mismatch',
-                });
-                console.warn(
-                    `Instance ${instanceId} returned a PGCR for ${parsed.run.instanceId}; recorded as id-mismatch.`
-                );
-                failed++;
-                // Counts toward the abort circuit like any other failure. A
-                // systemic mismatch is exactly the case that must not be allowed
-                // to run quietly to completion and report a partial result.
-                consecutiveFailures++;
-                if (consecutiveFailures >= CONFIG.consecutiveFailureLimit) {
-                    throw new Error(
-                        `Aborting: ${consecutiveFailures} consecutive failures, last an id-mismatch. ` +
-                        `That is the API, not the data.`
+                const response = body.Response as RawPgcrResponse;
+                const parsed = parsePgcr(response);
+
+                // Every row is keyed by the instance id inside the payload, so
+                // if Bungie ever returns a PGCR for a different instance than
+                // the one requested, the writes would target a row that does not
+                // exist: the UPDATE matches nothing, the player insert violates
+                // the FK, and the run reports a success that wrote no data.
+                // Checking costs one string compare and turns a silent no-op
+                // into a recorded status.
+                if (parsed.run.instanceId !== instanceId) {
+                    console.warn(
+                        `Instance ${instanceId} returned a PGCR for ${parsed.run.instanceId}; recorded as id-mismatch.`
                     );
+                    recordFailure(instanceId, 'id-mismatch');
+                    continue;
                 }
-                continue;
+
+                consecutiveFailures = 0;
+                duplicateCharacterEntries += parsed.run.duplicateCharacterEntries;
+                malformedEntries += parsed.run.malformedEntries;
+
+                // Re-serialize rather than keeping the original bytes: the
+                // archive holds Response only, not the constant
+                // ErrorCode/Message envelope.
+                storePgcr(db, statements, parsed, JSON.stringify(response));
+                ok++;
+                reportProgress();
             }
+        }
 
-            consecutiveFailures = 0;
-            duplicateCharacterEntries += parsed.run.duplicateCharacterEntries;
-            malformedEntries += parsed.run.malformedEntries;
+        /**
+         * Record one per-instance failure and trip the circuit if they pile up.
+         *
+         * "Consecutive" now means consecutive *completions*, not consecutive
+         * queue positions — with N in flight the finishing order is not the
+         * queue order. That is the right reading anyway: the property worth
+         * catching is "many failures with no success between them", which is
+         * what separates a systemic API problem from a few bad instances, and
+         * it survives reordering.
+         */
+        function recordFailure(instanceId: string, status: string): void {
+            statements.markRunFailed.run({
+                instanceId,
+                fetchedAt: Math.floor(Date.now() / 1000),
+                status,
+            });
+            failed++;
+            consecutiveFailures++;
+            reportProgress();
 
-            // Re-serialize rather than keeping the original bytes: the archive
-            // holds Response only, not the constant ErrorCode/Message envelope.
-            storePgcr(db, statements, parsed, JSON.stringify(response));
-            ok++;
-
-            if ((index + 1) % CONFIG.progressEvery === 0) {
-                const elapsed = (Date.now() - startedAt) / 1000;
-                const rate = (index + 1) / elapsed;
-                const remaining = Math.round((pending.length - index - 1) / rate);
-                console.log(
-                    `${index + 1}/${pending.length} — ${ok} ok, ${failed} failed, ` +
-                    `${rate.toFixed(1)}/s, ~${Math.floor(remaining / 60)}m ${remaining % 60}s left`
+            if (consecutiveFailures >= CONFIG.consecutiveFailureLimit && !fatalError) {
+                fatalError = new Error(
+                    `Aborting: ${consecutiveFailures} consecutive per-instance failures. ` +
+                    `That is the API, not the data. Last status: ${status}.`
                 );
             }
         }
+
+        function reportProgress(): void {
+            completed++;
+            if (completed % CONFIG.progressEvery !== 0) return;
+
+            const elapsed = (Date.now() - startedAt) / 1000;
+            const rate = completed / elapsed;
+            const remaining = Math.round((pending.length - completed) / rate);
+            console.log(
+                `${completed}/${pending.length} — ${ok} ok, ${failed} failed, ` +
+                `${rate.toFixed(1)}/s, ~${Math.floor(remaining / 60)}m ${remaining % 60}s left`
+            );
+        }
+
+        // Every worker settles before the error surfaces. Rejecting early would
+        // leave requests in flight writing to a database the `finally` below is
+        // about to close.
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+        if (fatalError) throw fatalError;
 
         console.log(`\nFetched ${ok} PGCRs, ${failed} failed.`);
         if (duplicateCharacterEntries > 0) {

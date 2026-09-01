@@ -37,6 +37,8 @@ interface Scenario {
     instanceIds: string[];
     check: (db: Database.Database, error: Error | null) => void;
     retryFailed?: boolean;
+    /** Workers in flight. Defaults to 4 so the pool is always exercised. */
+    concurrency?: number;
 }
 
 function seedDb(dbPath: string, instanceIds: string[]): void {
@@ -104,6 +106,80 @@ const scenarios: Scenario[] = [
             assert.strictEqual(restored.entries.length, 8);
             assert.strictEqual(restored.activityDetails.instanceId, '1001');
             assert.ok(raw.json_gz.length < raw.raw_bytes, 'archive should actually be compressed');
+        },
+    },
+    {
+        // The pool under load. Eight workers over fifty instances is the shape
+        // the real 10k run has, and the failure modes it guards against are
+        // invisible at one instance: a shared cursor that hands the same index
+        // to two workers (duplicate writes), or drops one (a silently skipped
+        // PGCR). Both would still "pass" every single-instance scenario above.
+        name: 'fifty instances across eight workers: each fetched exactly once',
+        instanceIds: Array.from({ length: 50 }, (_, i) => String(2000 + i)),
+        concurrency: 8,
+        responses: Object.fromEntries(
+            Array.from({ length: 50 }, (_, i) => [
+                String(2000 + i),
+                { status: 200, body: makeResponse(String(2000 + i)) },
+            ])
+        ),
+        check: (db) => {
+            const runs = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status = 'ok'`)
+                .get() as any;
+            assert.strictEqual(runs.n, 50, 'every instance should be fetched');
+
+            // 8 players and 35 weapon rows per PGCR in the golden payload. Exact
+            // multiples are what prove no instance was processed twice — an
+            // upsert would hide a double-write on the run row, but the counts
+            // here would not budge only if each ran exactly once.
+            const players = db.prepare(`SELECT COUNT(*) AS n FROM gos_10k_pgcr_players`).get() as any;
+            const weapons = db.prepare(`SELECT COUNT(*) AS n FROM gos_10k_pgcr_weapons`).get() as any;
+            const raw = db.prepare(`SELECT COUNT(*) AS n FROM gos_10k_pgcr_raw`).get() as any;
+            assert.strictEqual(players.n, 50 * 8);
+            assert.strictEqual(weapons.n, 50 * 35);
+            assert.strictEqual(raw.n, 50);
+        },
+    },
+    {
+        // A fatal outcome has to stop the whole run, not just the worker that
+        // saw it. The other seven are mid-flight when it fires; if they carried
+        // on writing, an outage would be recorded as data across an arbitrary
+        // number of rows, and the "rerun to resume" promise would be false.
+        name: 'a fatal outcome stops every worker, not just the one that saw it',
+        instanceIds: Array.from({ length: 40 }, (_, i) => String(3000 + i)),
+        concurrency: 8,
+        responses: Object.fromEntries(
+            Array.from({ length: 40 }, (_, i) => [
+                String(3000 + i),
+                i === 5
+                    ? { status: 200, body: { ErrorCode: 5, ErrorStatus: 'SystemDisabled', Message: 'down' } }
+                    : { status: 200, body: makeResponse(String(3000 + i)) },
+            ])
+        ),
+        check: (db, error) => {
+            assert.ok(error, 'the run should abort');
+            assert.match(error!.message, /error:5/);
+
+            // Nothing is marked failed: SystemDisabled is not a property of any
+            // instance. Rows either succeeded before the abort or stayed pending.
+            const failedRows = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status NOT IN ('ok')`)
+                .get() as any;
+            assert.strictEqual(failedRows.n, 0, 'no row should be marked failed');
+
+            // The abort must actually bite: with 8 workers over 40 instances,
+            // hitting the maintenance response at index 5 has to leave a large
+            // pending remainder rather than draining the queue.
+            const done = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status = 'ok'`)
+                .get() as any;
+            assert.ok(done.n < 40, `expected an early stop, got ${done.n}/40 fetched`);
+
+            const pending = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetched_at IS NULL`)
+                .get() as any;
+            assert.strictEqual(pending.n, 40 - done.n, 'the remainder must stay resumable');
         },
     },
     {
@@ -220,7 +296,15 @@ async function runScenario(scenario: Scenario): Promise<void> {
 
     let error: Error | null = null;
     try {
-        await backfill({ limit: null, retryFailed: scenario.retryFailed ?? false, dbPath });
+        await backfill({
+            limit: null,
+            retryFailed: scenario.retryFailed ?? false,
+            dbPath,
+            // Scenario-controlled, defaulting to >1 so every scenario above
+            // exercises the worker pool rather than accidentally testing a
+            // one-at-a-time path the real run never takes.
+            concurrency: scenario.concurrency ?? 4,
+        });
     } catch (err) {
         error = err as Error;
     } finally {
@@ -254,9 +338,9 @@ async function runIdempotencyScenario(): Promise<void> {
     }) as typeof fetch;
 
     try {
-        await backfill({ limit: null, retryFailed: false, dbPath });
+        await backfill({ limit: null, retryFailed: false, dbPath, concurrency: 4 });
         // Second pass with --retry-failed forces a refetch of the same instance.
-        await backfill({ limit: null, retryFailed: true, dbPath });
+        await backfill({ limit: null, retryFailed: true, dbPath, concurrency: 4 });
 
         const db = new Database(dbPath, { readonly: true });
         const players = db.prepare(`SELECT COUNT(*) AS n FROM gos_10k_pgcr_players`).get() as any;
@@ -292,10 +376,10 @@ async function runResumeScenario(): Promise<void> {
     }) as typeof fetch;
 
     try {
-        await backfill({ limit: 1, retryFailed: false, dbPath });
+        await backfill({ limit: 1, retryFailed: false, dbPath, concurrency: 4 });
         assert.deepStrictEqual(fetched, ['8001'], '--limit 1 should fetch exactly one');
 
-        await backfill({ limit: null, retryFailed: false, dbPath });
+        await backfill({ limit: null, retryFailed: false, dbPath, concurrency: 4 });
         assert.deepStrictEqual(fetched, ['8001', '8002'], 'the second pass must skip the done row');
 
         console.log('  PASS  resume skips completed rows and --limit stops early');

@@ -23,19 +23,35 @@ const MAX_RETRIES = 5;
 
 export class RateLimiter {
     private readonly minIntervalMs: number;
-    private lastCallTime = 0;
+    /** The next instant a caller may fire. Reserved, not observed. */
+    private nextSlotAt = 0;
 
     constructor(maxRequestsPerSecond: number) {
         const rps = Math.min(Math.max(1, maxRequestsPerSecond), MAX_RPS);
         this.minIntervalMs = 1000 / rps;
     }
 
+    /**
+     * Resolves when this caller's slot is due, and *reserves* that slot before
+     * awaiting anything.
+     *
+     * The reservation is the whole design. An implementation that reads a
+     * `lastCallTime` and writes it back after sleeping is correct only while
+     * exactly one call is ever in flight: with N concurrent callers they all
+     * read the same timestamp, all compute the same delay, and all wake in the
+     * same tick — N requests fired at once, and the limiter silently stops
+     * limiting at precisely the moment it starts to matter. Claiming the slot
+     * up front makes each caller queue behind the last claim instead.
+     */
     async wait(): Promise<void> {
-        const delay = this.minIntervalMs - (Date.now() - this.lastCallTime);
+        const now = Date.now();
+        const slot = Math.max(now, this.nextSlotAt);
+        this.nextSlotAt = slot + this.minIntervalMs;
+
+        const delay = slot - now;
         if (delay > 0) {
             await new Promise((resolve) => setTimeout(resolve, delay));
         }
-        this.lastCallTime = Date.now();
     }
 }
 
