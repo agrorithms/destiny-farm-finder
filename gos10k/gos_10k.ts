@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { createBungieFetch } from './bungie-fetch';
 
 // ==========================================
 // CONFIGURATION (Fill these in manually)
@@ -26,10 +27,6 @@ const CONFIG = {
 // page-exhaustion signal: a short page means there is nothing after it.
 const PAGE_COUNT = 250;
 
-// Bound the 429 retry loop so a persistent throttle fails the run instead of
-// spinning forever.
-const MAX_RETRIES = 5;
-
 const API_KEY = process.env.NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY;
 if (!API_KEY) {
     throw new Error(
@@ -44,73 +41,11 @@ const GOS_HASHES = new Set<number>([
 const HEADERS = { 'X-API-Key': API_KEY };
 
 // ==========================================
-// RATE LIMITER & FETCH WRAPPER
+// FETCH
 // ==========================================
-class RateLimiter {
-    private maxPerSecond: number;
-    private minIntervalMs: number;
-    private lastCallTime: number = 0;
-
-    constructor(maxRequestsPerSecond: number) {
-        // Hard cap enforced at maximum 25 requests per second
-        this.maxPerSecond = Math.min(Math.max(1, maxRequestsPerSecond), 25);
-        this.minIntervalMs = 1000 / this.maxPerSecond;
-    }
-
-    async wait(): Promise<void> {
-        const now = Date.now();
-        const elapsed = now - this.lastCallTime;
-        const delay = this.minIntervalMs - elapsed;
-
-        if (delay > 0) {
-            await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-        this.lastCallTime = Date.now();
-    }
-}
-
-const limiter = new RateLimiter(CONFIG.maxRequestsPerSecond);
-
-async function rateLimitedFetch(
-    url: string,
-    headers: Record<string, string>,
-    attempt: number = 0
-): Promise<any> {
-    await limiter.wait();
-
-    const res = await fetch(url, { headers });
-
-    // Handle Bungie HTTP 429 Rate Limit Backoff
-    if (res.status === 429) {
-        if (attempt >= MAX_RETRIES) {
-            throw new Error(`Still rate limited (HTTP 429) after ${MAX_RETRIES} retries — giving up.`);
-        }
-        const backoffMs = 2000 * (attempt + 1);
-        console.warn(`Rate limit hit (HTTP 429)! Backing off ${backoffMs}ms before retry ${attempt + 1}/${MAX_RETRIES}...`);
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
-        return rateLimitedFetch(url, headers, attempt + 1);
-    }
-
-    if (!res.ok) {
-        throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
-    }
-
-    const data = await res.json();
-
-    // Bungie signals most failures as HTTP 200 with ErrorCode != 1 —
-    // SystemDisabled (weekly maintenance), DestinyPrivacyRestriction,
-    // DestinyThrottledByGameServer. Left unchecked, `data.Response` is undefined,
-    // the caller sees an empty activity list, and a transient API error is
-    // silently indistinguishable from "end of history" — the run would report a
-    // short total as if it were complete. Throw instead: INSERT OR IGNORE makes
-    // restarting free. Same check as src/lib/bungie/client.ts.
-    if (data?.ErrorCode !== undefined && data.ErrorCode !== 1) {
-        const throttle = data.ThrottleSeconds > 0 ? ` (ThrottleSeconds: ${data.ThrottleSeconds})` : '';
-        throw new Error(`Bungie API error ${data.ErrorCode} ${data.ErrorStatus}: ${data.Message}${throttle}`);
-    }
-
-    return data;
-}
+// Rate limiter and 429/ErrorCode handling live in ./bungie-fetch so the PGCR
+// backfill reuses this exact behaviour rather than a second copy of it.
+const { fetchOk: rateLimitedFetch } = createBungieFetch(CONFIG.maxRequestsPerSecond);
 
 // ==========================================
 // DATABASE & MAIN WORKFLOW
