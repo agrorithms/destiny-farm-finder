@@ -2,6 +2,7 @@ import 'dotenv/config';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { createBungieFetch } from './bungie-fetch';
+import { createRunsTable } from './runs-schema';
 
 // ==========================================
 // CONFIGURATION (Fill these in manually)
@@ -66,29 +67,7 @@ function initDb(): Database.Database {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
 
-    db.exec(`
-    CREATE TABLE IF NOT EXISTS gos_10k_runs (
-      instance_id TEXT PRIMARY KEY,
-      character_id TEXT NOT NULL,
-      activity_hash INTEGER NOT NULL,
-      raid_key TEXT,
-      period INTEGER NOT NULL,
-      ended_at INTEGER,
-      duration_seconds INTEGER DEFAULT 0,
-      completion_reason INTEGER,
-      -- NULL until a later backfill pass reads them off the PGCR endpoint.
-      -- Activity History does not carry either field, so anything written here
-      -- from a history row would be invented.
-      starting_phase_index INTEGER,
-      activity_was_started_from_beginning INTEGER,
-      completed INTEGER DEFAULT 0,
-      player_count INTEGER DEFAULT 0,
-      source TEXT DEFAULT 'unknown',
-      fetched_at INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_gos_10k_runs_period ON gos_10k_runs(period);
-  `);
+    createRunsTable(db);
 
     // Migration guard for a database created before completion_reason existed —
     // CREATE TABLE IF NOT EXISTS is a no-op on it. Same idiom as

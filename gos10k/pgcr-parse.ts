@@ -29,8 +29,8 @@ interface RawWeapon {
 
 interface RawEntry {
     characterId: string;
-    player: {
-        destinyUserInfo: {
+    player?: {
+        destinyUserInfo?: {
             membershipId: string;
             membershipType: number;
             displayName?: string;
@@ -91,7 +91,8 @@ export interface ParsedRun {
     startingPhaseIndex: number | null;
     activityWasStartedFromBeginning: number | null;
     isFullClear: boolean;
-    durationSeconds: number;
+    /** NULL when no entry carried activityDurationSeconds at all. */
+    durationSeconds: number | null;
     /** 1 when entries reported more than one activityDurationSeconds. */
     durationDisagreement: number;
     activityDifficultyTier: number | null;
@@ -102,6 +103,8 @@ export interface ParsedRun {
     playerCount: number;
     /** Anomaly counter, logged by the caller. Expected to be 0 everywhere. */
     duplicateCharacterEntries: number;
+    /** Entries with no membership id — unstorable, skipped. Expected 0. */
+    malformedEntries: number;
 }
 
 export interface ParsedPlayer {
@@ -188,13 +191,17 @@ export function parsePgcr(response: RawPgcrResponse): ParsedPgcr {
     const durations = entries
         .map((e) => stat(e.values?.activityDurationSeconds))
         .filter((d): d is number => d !== null);
-    const durationSeconds = durations.length > 0 ? Math.max(...durations) : 0;
+    // NULL, not 0, when nothing reported a duration. A stored 0 on a row marked
+    // 'ok' would read as "this raid took no time" rather than "Bungie did not
+    // say", and there would be no way to tell them apart afterwards.
+    const durationSeconds = durations.length > 0 ? Math.max(...durations) : null;
     const durationDisagreement = new Set(durations).size > 1 ? 1 : 0;
 
     const players: ParsedPlayer[] = [];
     const weapons: ParsedWeapon[] = [];
     const seenCharacterIds = new Set<string>();
     let duplicateCharacterEntries = 0;
+    let malformedEntries = 0;
 
     for (const entry of entries) {
         const characterId = entry.characterId;
@@ -208,6 +215,15 @@ export function parsePgcr(response: RawPgcrResponse): ParsedPgcr {
         seenCharacterIds.add(characterId);
 
         const user = entry.player?.destinyUserInfo;
+        // membership_id and membership_type are NOT NULL, and rightly so: a
+        // player row without an identity is not a player. Skip and count rather
+        // than inventing a placeholder that would show up in the analysis as a
+        // real person.
+        if (!user?.membershipId || typeof user.membershipType !== 'number') {
+            malformedEntries++;
+            continue;
+        }
+
         const values = entry.values ?? {};
         const ext = entry.extended;
         const extValues = ext?.values;
@@ -215,13 +231,13 @@ export function parsePgcr(response: RawPgcrResponse): ParsedPgcr {
         players.push({
             instanceId,
             characterId,
-            membershipId: user?.membershipId,
-            membershipType: user?.membershipType,
-            displayName: user?.displayName ?? null,
-            bungieGlobalDisplayName: user?.bungieGlobalDisplayName ?? null,
+            membershipId: user.membershipId,
+            membershipType: user.membershipType,
+            displayName: user.displayName ?? null,
+            bungieGlobalDisplayName: user.bungieGlobalDisplayName ?? null,
             // Name#Code. Without the code these rows cannot render an identity,
             // and two guardians can share a global display name.
-            bungieGlobalDisplayNameCode: user?.bungieGlobalDisplayNameCode ?? null,
+            bungieGlobalDisplayNameCode: user.bungieGlobalDisplayNameCode ?? null,
             characterClass: entry.player?.characterClass ?? null,
             // The hash is stable; characterClass is a localized string.
             classHash: entry.player?.classHash ?? null,
@@ -285,8 +301,13 @@ export function parsePgcr(response: RawPgcrResponse): ParsedPgcr {
                     : null,
             isPrivate: boolToInt(response.activityDetails.isPrivate),
             entryCount: entries.length,
-            playerCount: new Set(entries.map((e) => e.player?.destinyUserInfo?.membershipId)).size,
+            playerCount: new Set(
+                entries
+                    .map((e) => e.player?.destinyUserInfo?.membershipId)
+                    .filter((id): id is string => typeof id === 'string')
+            ).size,
             duplicateCharacterEntries,
+            malformedEntries,
         },
         players,
         weapons,

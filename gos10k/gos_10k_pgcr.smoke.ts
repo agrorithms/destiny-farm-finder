@@ -5,6 +5,7 @@ import zlib from 'node:zlib';
 import assert from 'node:assert';
 import Database from 'better-sqlite3';
 import { backfill } from './gos_10k_pgcr';
+import { createRunsTable } from './runs-schema';
 
 /**
  * End-to-end smoke test for the PGCR backfill, with `fetch` stubbed.
@@ -40,24 +41,9 @@ interface Scenario {
 
 function seedDb(dbPath: string, instanceIds: string[]): void {
     const db = new Database(dbPath);
-    db.exec(`
-    CREATE TABLE gos_10k_runs (
-      instance_id TEXT PRIMARY KEY,
-      character_id TEXT NOT NULL,
-      activity_hash INTEGER NOT NULL,
-      raid_key TEXT,
-      period INTEGER NOT NULL,
-      ended_at INTEGER,
-      duration_seconds INTEGER DEFAULT 0,
-      completion_reason INTEGER,
-      starting_phase_index INTEGER,
-      activity_was_started_from_beginning INTEGER,
-      completed INTEGER DEFAULT 0,
-      player_count INTEGER DEFAULT 0,
-      source TEXT DEFAULT 'unknown',
-      fetched_at INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-  `);
+    // The real schema, not a retyped copy: a seeder that drifts would let these
+    // scenarios pass against rows the actual crawl could never produce.
+    createRunsTable(db);
     const insert = db.prepare(
         `INSERT INTO gos_10k_runs (instance_id, character_id, activity_hash, period, completed)
      VALUES (?, '123', 1042180643, ?, 1)`
@@ -93,6 +79,9 @@ const scenarios: Scenario[] = [
             assert.strictEqual(run.activity_was_started_from_beginning, 1);
             assert.strictEqual(run.duration_seconds, 2311);
             assert.strictEqual(run.duration_disagreement, 0);
+            assert.strictEqual(run.is_full_clear, 1);
+            // Confirmed against the PGCR, not left at the History value.
+            assert.strictEqual(run.activity_hash, 1042180643);
             assert.strictEqual(run.activity_difficulty_tier, -1);
             assert.strictEqual(run.is_private, 0);
             assert.strictEqual(run.entry_count, 8);
@@ -181,6 +170,7 @@ const scenarios: Scenario[] = [
             const run = db.prepare(`SELECT * FROM gos_10k_runs`).get() as any;
             assert.strictEqual(run.starting_phase_index, 3);
             assert.strictEqual(run.activity_was_started_from_beginning, 0);
+            assert.strictEqual(run.is_full_clear, 0, 'phase 3 is not a full clear');
             assert.strictEqual(run.pgcr_fetch_status, 'ok');
             // Q6: joined-in-progress runs keep their player rows. Someone who
             // joined mid-run 300 times is still part of the story, and these

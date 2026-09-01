@@ -133,6 +133,12 @@ export function initPgcrSchema(db: Database.Database): void {
         // rather than assumed — the last unverified field semantics on this
         // project (completionReason) did not survive contact with the data.
         ['duration_disagreement', 'INTEGER'],
+        // The full-clear verdict, written from parsePgcr's copy of the rule in
+        // src/lib/crawler/pgcr.ts:39-42. Stored rather than recomputed in SQL:
+        // a second hand-written copy of the disjunction in the report query
+        // would be the one that actually produced the headline number, while the
+        // tested copy sat unused. One rule, one place, covered by tests.
+        ['is_full_clear', 'INTEGER'],
     ];
 
     for (const [name, type] of newColumns) {
@@ -235,6 +241,11 @@ function buildStatements(db: Database.Database) {
       activity_was_started_from_beginning = @activityWasStartedFromBeginning,
       duration_seconds = @durationSeconds,
       duration_disagreement = @durationDisagreement,
+      is_full_clear = @isFullClear,
+      -- Confirmed against the PGCR rather than left as the Activity History
+      -- value. Same directorActivityHash ?? referenceId fallback the rest of
+      -- the repo uses (src/lib/crawler/pgcr.ts:28).
+      activity_hash = COALESCE(@activityHash, activity_hash),
       activity_difficulty_tier = @activityDifficultyTier,
       is_private = @isPrivate,
       entry_count = @entryCount,
@@ -355,6 +366,8 @@ export function storePgcr(
             activityWasStartedFromBeginning: parsed.run.activityWasStartedFromBeginning,
             durationSeconds: parsed.run.durationSeconds,
             durationDisagreement: parsed.run.durationDisagreement,
+            isFullClear: parsed.run.isFullClear ? 1 : 0,
+            activityHash: parsed.run.activityHash,
             activityDifficultyTier: parsed.run.activityDifficultyTier,
             isPrivate: parsed.run.isPrivate,
             entryCount: parsed.run.entryCount,
@@ -410,10 +423,14 @@ export function printReport(db: Database.Database, targetMembershipId: string, t
 
     // The reconciliation against raid.report's 10,000.
     //
-    // Restricted to successfully fetched rows on purpose: `starting_phase_index
-    // IS NULL` is part of the full-clear disjunction, and an unfetched row is
-    // also NULL there — counting those would silently inflate the full-clear
-    // side with rows nobody has looked at.
+    // full_clear comes from the stored is_full_clear column, not from a copy of
+    // the disjunction written out again here. Restating it in SQL would make
+    // this query — not the tested parse — the thing that decides the headline
+    // number, and the two would be free to drift.
+    //
+    // Restricted to successfully fetched rows: is_full_clear is NULL for
+    // anything not yet looked at, and counting those would inflate the
+    // full-clear side with rows nobody has checked.
     //
     // Reported as a cross-tab rather than a single number so a mismatch shows
     // *which* predicate moved. If the total is not 10,000, that is a fact about
@@ -422,10 +439,7 @@ export function printReport(db: Database.Database, targetMembershipId: string, t
     const crosstab = db
         .prepare(
             `SELECT
-         CASE WHEN r.activity_was_started_from_beginning = 1
-                OR r.starting_phase_index = 0
-                OR r.starting_phase_index IS NULL
-              THEN 1 ELSE 0 END AS full_clear,
+         COALESCE(r.is_full_clear, 0) AS full_clear,
          CASE WHEN EXISTS (
                 SELECT 1 FROM gos_10k_pgcr_players p
                  WHERE p.instance_id = r.instance_id
@@ -502,6 +516,7 @@ export async function backfill(options: Options): Promise<void> {
         let failed = 0;
         let consecutiveFailures = 0;
         let duplicateCharacterEntries = 0;
+        let malformedEntries = 0;
         const startedAt = Date.now();
 
         for (const [index, { instance_id: instanceId }] of pending.entries()) {
@@ -536,8 +551,6 @@ export async function backfill(options: Options): Promise<void> {
                 continue;
             }
 
-            consecutiveFailures = 0;
-
             const response = body.Response as RawPgcrResponse;
             const parsed = parsePgcr(response);
 
@@ -557,10 +570,22 @@ export async function backfill(options: Options): Promise<void> {
                     `Instance ${instanceId} returned a PGCR for ${parsed.run.instanceId}; recorded as id-mismatch.`
                 );
                 failed++;
+                // Counts toward the abort circuit like any other failure. A
+                // systemic mismatch is exactly the case that must not be allowed
+                // to run quietly to completion and report a partial result.
+                consecutiveFailures++;
+                if (consecutiveFailures >= CONFIG.consecutiveFailureLimit) {
+                    throw new Error(
+                        `Aborting: ${consecutiveFailures} consecutive failures, last an id-mismatch. ` +
+                        `That is the API, not the data.`
+                    );
+                }
                 continue;
             }
 
+            consecutiveFailures = 0;
             duplicateCharacterEntries += parsed.run.duplicateCharacterEntries;
+            malformedEntries += parsed.run.malformedEntries;
 
             // Re-serialize rather than keeping the original bytes: the archive
             // holds Response only, not the constant ErrorCode/Message envelope.
@@ -586,6 +611,15 @@ export async function backfill(options: Options): Promise<void> {
             console.log(
                 `WARNING: ${duplicateCharacterEntries} duplicate character entries were skipped. ` +
                 `Expected 0 — the (instance_id, character_id) key assumes uniqueness.`
+            );
+        }
+
+        if (malformedEntries > 0) {
+            // An entry with no membership id cannot become a row: membership_id
+            // is NOT NULL, and inventing a placeholder would put a fake player
+            // in the analysis. Skipped and counted instead.
+            console.log(
+                `WARNING: ${malformedEntries} entries had no membership id and were skipped. Expected 0.`
             );
         }
 

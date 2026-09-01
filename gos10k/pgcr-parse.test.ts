@@ -208,7 +208,9 @@ describe('parsePgcr — activityDurationSeconds agreement', () => {
         const p = clone();
         p.entries = [];
         const parsed = parsePgcr(p);
-        expect(parsed.run.durationSeconds).toBe(0);
+        // NULL, not 0: "Bungie did not report a duration" is not "the raid took
+        // no time", and a stored 0 on an 'ok' row could never be told apart.
+        expect(parsed.run.durationSeconds).toBeNull();
         expect(parsed.run.durationDisagreement).toBe(0);
         expect(parsed.run.entryCount).toBe(0);
         expect(parsed.run.playerCount).toBe(0);
@@ -271,6 +273,22 @@ describe('parsePgcr — defensive counting', () => {
         const parsed = parsePgcr(p);
         expect(parsed.run.duplicateCharacterEntries).toBe(1);
         expect(parsed.players).toHaveLength(8);
+    });
+
+    it('skips an entry with no membership id instead of inventing one', () => {
+        // membership_id is NOT NULL, and rightly so — a player row with no
+        // identity is not a player. A placeholder would show up in the "who
+        // helped him" analysis as a real person who never existed.
+        const p = clone();
+        delete (p.entries[0]!.player as { destinyUserInfo?: unknown }).destinyUserInfo;
+        const parsed = parsePgcr(p);
+        expect(parsed.run.malformedEntries).toBe(1);
+        expect(parsed.players).toHaveLength(7);
+        expect(parsed.run.entryCount).toBe(8);
+    });
+
+    it('reports zero malformed entries on the real payload', () => {
+        expect(parsePgcr(REAL).run.malformedEntries).toBe(0);
     });
 
     it('counts distinct memberships, not entries, for playerCount', () => {
