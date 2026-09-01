@@ -35,7 +35,7 @@ interface Scenario {
     /** Keyed by instance id; the value is what fetch should return. */
     responses: Record<string, { status: number; body: unknown }>;
     instanceIds: string[];
-    check: (db: Database.Database, error: Error | null) => void;
+    check: (db: Database.Database, error: Error | null, fetchedIds: string[]) => void;
     retryFailed?: boolean;
     /** Workers in flight. Defaults to 4 so the pool is always exercised. */
     concurrency?: number;
@@ -123,7 +123,23 @@ const scenarios: Scenario[] = [
                 { status: 200, body: makeResponse(String(2000 + i)) },
             ])
         ),
-        check: (db) => {
+        check: (db, _error, fetchedIds) => {
+            // The direct statement of the invariant: one request per instance.
+            //
+            // The row counts below catch a *dropped* index, but they cannot
+            // catch a duplicated one — every write is an upsert, so handing
+            // index 12 to two workers leaves the same rows as handing it to
+            // one. The classic broken cursor (read, await, write back) produces
+            // both symptoms together, so the counts would probably notice; this
+            // assertion does not have to rely on "probably".
+            const counts = new Map<string, number>();
+            for (const id of fetchedIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+
+            const duplicated = [...counts].filter(([, n]) => n > 1);
+            assert.deepStrictEqual(duplicated, [], 'no instance may be fetched twice');
+            assert.strictEqual(counts.size, 50, 'every instance must be fetched');
+            assert.strictEqual(fetchedIds.length, 50, 'exactly one request per instance');
+
             const runs = db
                 .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status = 'ok'`)
                 .get() as any;
@@ -157,9 +173,18 @@ const scenarios: Scenario[] = [
                     : { status: 200, body: makeResponse(String(3000 + i)) },
             ])
         ),
-        check: (db, error) => {
+        check: (db, error, fetchedIds) => {
             assert.ok(error, 'the run should abort');
             assert.match(error!.message, /error:5/);
+
+            // The cursor must stay sound on the abort path too: a worker that
+            // returns early on the fatal flag must not have left its index to be
+            // handed out again.
+            assert.strictEqual(
+                new Set(fetchedIds).size,
+                fetchedIds.length,
+                'no instance may be fetched twice, even while aborting'
+            );
 
             // Nothing is marked failed: SystemDisabled is not a property of any
             // instance. Rows either succeeded before the abort or stayed pending.
@@ -281,11 +306,20 @@ async function runScenario(scenario: Scenario): Promise<void> {
     const dbPath = path.join(dir, 'smoke.db');
     seedDb(dbPath, scenario.instanceIds);
 
+    // Every instance id the pool actually asked for, in completion order.
+    // Row counts cannot stand in for this: every write is an upsert, so an
+    // instance processed twice leaves exactly the same rows behind as one
+    // processed once (see the rerun-idempotency scenario, which relies on
+    // precisely that). Duplicate work is invisible downstream and has to be
+    // observed here, at the boundary, or not at all.
+    const fetchedIds: string[] = [];
+
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
         const url = String(input);
         const match = url.match(/PostGameCarnageReport\/(\d+)\//);
         assert.ok(match, `unexpected URL in smoke test: ${url}`);
+        fetchedIds.push(match![1]!);
         const canned = scenario.responses[match![1]!];
         assert.ok(canned, `no canned response for instance ${match![1]}`);
         return {
@@ -313,7 +347,7 @@ async function runScenario(scenario: Scenario): Promise<void> {
 
     const db = new Database(dbPath, { readonly: true });
     try {
-        scenario.check(db, error);
+        scenario.check(db, error, fetchedIds);
         console.log(`  PASS  ${scenario.name}`);
     } finally {
         db.close();
