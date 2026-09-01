@@ -77,7 +77,32 @@ export function createBungieFetch(maxRequestsPerSecond: number): BungieFetch {
     ): Promise<RawFetchResult> {
         await limiter.wait();
 
-        const res = await fetch(url, { headers });
+        // Transport failures are retried on exactly the same footing as a 429.
+        //
+        // `fetch` rejects — rather than returning a status — when the
+        // connection itself fails: ECONNRESET, ECONNREFUSED, a DNS blip, a TLS
+        // reset. Over a run of thousands of requests that is not an exceptional
+        // event, it is a routine one, and letting it propagate ends the whole
+        // crawl over a single dropped socket. Observed for real: a run died on
+        // ECONNRESET with ~1,000 of 10,023 PGCRs left.
+        let res: Response;
+        try {
+            res = await fetch(url, { headers });
+        } catch (err) {
+            if (attempt >= MAX_RETRIES) {
+                throw new Error(
+                    `Network error after ${MAX_RETRIES} retries: ${(err as Error).message}`,
+                    { cause: err }
+                );
+            }
+            const backoffMs = 2000 * (attempt + 1);
+            console.warn(
+                `Network error (${(err as Error).message}). ` +
+                `Retrying in ${backoffMs}ms — attempt ${attempt + 1}/${MAX_RETRIES}...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            return fetchRaw(url, headers, attempt + 1);
+        }
 
         // HTTP 429 is the one status worth retrying in place: it is explicitly
         // "you were too fast", not "this request is wrong".

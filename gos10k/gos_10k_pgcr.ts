@@ -606,6 +606,30 @@ export async function backfill(options: Options): Promise<void> {
          * was going; the database stays strictly one-at-a-time.
          */
         async function worker(): Promise<void> {
+            try {
+                await workerLoop();
+            } catch (err) {
+                // An unexpected throw is routed through the same shared flag as
+                // a fatal outcome rather than being allowed to reject.
+                //
+                // This is what makes the Promise.all below honest. A rejecting
+                // worker makes Promise.all reject on the spot, backfill throws,
+                // and its `finally` closes the database while the other workers
+                // are still mid-flight — they then wake up and write to a closed
+                // connection. Converting the throw into the flag lets every
+                // worker notice, finish its current instance, and return, so the
+                // close happens when nothing is left running.
+                if (!fatalError) {
+                    fatalError = new Error(
+                        `Aborting: ${(err as Error).message}. ` +
+                        `${ok} fetched this run; rerun to resume from here.`,
+                        { cause: err }
+                    );
+                }
+            }
+        }
+
+        async function workerLoop(): Promise<void> {
             for (;;) {
                 if (fatalError) return;
 
@@ -711,9 +735,9 @@ export async function backfill(options: Options): Promise<void> {
             );
         }
 
-        // Every worker settles before the error surfaces. Rejecting early would
-        // leave requests in flight writing to a database the `finally` below is
-        // about to close.
+        // Every worker settles before the error surfaces — worker() cannot
+        // reject, by construction. Rejecting early would leave requests in
+        // flight writing to a database the `finally` below is about to close.
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
         if (fatalError) throw fatalError;
 

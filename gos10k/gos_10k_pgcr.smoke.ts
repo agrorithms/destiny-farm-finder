@@ -39,6 +39,13 @@ interface Scenario {
     retryFailed?: boolean;
     /** Workers in flight. Defaults to 4 so the pool is always exercised. */
     concurrency?: number;
+    /**
+     * Overrides `responses` when the scenario needs to *throw* rather than
+     * return. A canned status/body cannot express a transport failure: fetch
+     * rejects instead of resolving, which is exactly what makes that case
+     * escape every code path that inspects a status.
+     */
+    fetchImpl?: (id: string) => { status: number; body: unknown };
 }
 
 function seedDb(dbPath: string, instanceIds: string[]): void {
@@ -208,6 +215,60 @@ const scenarios: Scenario[] = [
         },
     },
     {
+        // A throw from deep inside a worker, after the retry budget is spent.
+        //
+        // The pool must treat it exactly like a fatal outcome: drain, leave the
+        // remainder pending, mark nothing failed. Before this was handled, the
+        // rejection propagated out of Promise.all while seven workers were still
+        // in flight, and backfill's `finally` closed the database underneath
+        // them. Nothing was corrupted — the per-PGCR transaction saw to that —
+        // but the workers woke to write to a closed connection.
+        name: 'a persistent transport failure aborts cleanly with the rest resumable',
+        instanceIds: Array.from({ length: 40 }, (_, i) => String(5000 + i)),
+        concurrency: 8,
+        responses: {},
+        fetchImpl: (id: string) => {
+            if (id === '5005') {
+                throw Object.assign(new TypeError('fetch failed'), {
+                    cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+                });
+            }
+            return { status: 200, body: makeResponse(id) };
+        },
+        check: (db, error) => {
+            assert.ok(error, 'the run should abort');
+            assert.match(error!.message, /Network error|ECONNRESET|fetch failed/);
+
+            // A dropped socket says nothing about any instance, so no row may
+            // carry a failure status for it.
+            const failedRows = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status NOT IN ('ok')`)
+                .get() as any;
+            assert.strictEqual(failedRows.n, 0, 'a transport error is not per-instance data');
+
+            // Whatever landed before the abort is complete and consistent; the
+            // rest is untouched. This is the resume contract, and it is the
+            // reason "just run it again" is a safe answer to a dropped
+            // connection.
+            const done = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetch_status = 'ok'`)
+                .get() as any;
+            const pending = db
+                .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE pgcr_fetched_at IS NULL`)
+                .get() as any;
+            assert.strictEqual(pending.n, 40 - done.n, 'the remainder must stay resumable');
+
+            const orphans = db
+                .prepare(
+                    `SELECT COUNT(*) AS n FROM gos_10k_pgcr_players p
+                      LEFT JOIN gos_10k_runs r ON r.instance_id = p.instance_id
+                      WHERE r.pgcr_fetch_status IS NOT 'ok'`
+                )
+                .get() as any;
+            assert.strictEqual(orphans.n, 0, 'no player rows without a completed run');
+        },
+    },
+    {
         name: 'a privacy-restricted instance is recorded and the run continues',
         instanceIds: ['2001', '2002'],
         responses: {
@@ -320,13 +381,26 @@ async function runScenario(scenario: Scenario): Promise<void> {
         const match = url.match(/PostGameCarnageReport\/(\d+)\//);
         assert.ok(match, `unexpected URL in smoke test: ${url}`);
         fetchedIds.push(match![1]!);
-        const canned = scenario.responses[match![1]!];
+        const canned = scenario.fetchImpl
+            ? scenario.fetchImpl(match![1]!)
+            : scenario.responses[match![1]!];
         assert.ok(canned, `no canned response for instance ${match![1]}`);
         return {
             status: canned.status,
             json: async () => canned.body,
         } as Response;
     }) as typeof fetch;
+
+    // Unhandled rejections are a first-class failure here, not noise.
+    //
+    // If a worker is allowed to reject, Promise.all rejects on the spot,
+    // backfill's `finally` closes the database, and the workers still in flight
+    // wake up to write to a closed connection. Every assertion about final DB
+    // state still passes in that world — the damage is invisible in the rows —
+    // so the only way to see it is to watch for the rejections it produces.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
 
     let error: Error | null = null;
     try {
@@ -344,6 +418,15 @@ async function runScenario(scenario: Scenario): Promise<void> {
     } finally {
         globalThis.fetch = originalFetch;
     }
+
+    // Give any stranded worker a turn to reject before we stop listening.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.off('unhandledRejection', onUnhandled);
+    assert.deepStrictEqual(
+        unhandled.map((r) => (r as Error)?.message ?? String(r)),
+        [],
+        'no worker may be left running after the run ends'
+    );
 
     const db = new Database(dbPath, { readonly: true });
     try {

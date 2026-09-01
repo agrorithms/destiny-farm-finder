@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { RateLimiter } from './bungie-fetch';
+import { afterEach, beforeEach, vi } from 'vitest';
+import { createBungieFetch, RateLimiter } from './bungie-fetch';
 
 /**
  * These exist because the PGCR backfill made the limiter concurrent.
@@ -54,5 +55,83 @@ describe('RateLimiter', () => {
         for (let i = 0; i < 3; i++) await limiter.wait();
         // Clamped to 25 rps => 40ms apart => 2 gaps => >= 80ms.
         expect(Date.now() - started).toBeGreaterThanOrEqual(70);
+    });
+});
+
+describe('fetchRaw — transport failures', () => {
+    const originalFetch = globalThis.fetch;
+
+    beforeEach(() => {
+        // The backoff is 2s, 4s, ... — real timers would make this a minute long.
+        vi.useFakeTimers();
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        globalThis.fetch = originalFetch;
+    });
+
+    /** Runs a promise to completion while advancing fake timers. */
+    async function settle<T>(p: Promise<T>): Promise<T> {
+        const done = p.then(
+            (v) => ({ ok: true as const, v }),
+            (e) => ({ ok: false as const, e })
+        );
+        await vi.runAllTimersAsync();
+        const r = await done;
+        if (!r.ok) throw r.e;
+        return r.v;
+    }
+
+    it('retries a dropped connection and succeeds', async () => {
+        // The exact shape that killed a real run with ~1000 PGCRs to go: fetch
+        // REJECTS rather than returning a status, so nothing downstream that
+        // inspects httpStatus can see it — it has to be caught here.
+        const reset = Object.assign(new TypeError('fetch failed'), {
+            cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        });
+
+        let calls = 0;
+        globalThis.fetch = vi.fn(async () => {
+            calls++;
+            if (calls <= 2) throw reset;
+            return { status: 200, json: async () => ({ ErrorCode: 1, Response: { ok: true } }) } as Response;
+        }) as unknown as typeof fetch;
+
+        const { fetchRaw } = createBungieFetch(25);
+        const result = await settle(fetchRaw('https://example.test/pgcr/1/', {}));
+
+        expect(calls).toBe(3);
+        expect(result.httpStatus).toBe(200);
+        expect(result.body.Response).toEqual({ ok: true });
+    });
+
+    it('gives up after the retry budget rather than spinning forever', async () => {
+        // A persistent outage must end the run with a clear error, not retry
+        // indefinitely while appearing to make progress.
+        globalThis.fetch = vi.fn(async () => {
+            throw new TypeError('fetch failed');
+        }) as unknown as typeof fetch;
+
+        const { fetchRaw } = createBungieFetch(25);
+        await expect(settle(fetchRaw('https://example.test/pgcr/1/', {}))).rejects.toThrow(
+            /Network error after 5 retries/
+        );
+        // 1 initial attempt + 5 retries.
+        expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+    });
+
+    it('does not retry an HTTP error status — only a transport failure', async () => {
+        // A 500 is a fatal outcome the classifier is responsible for, not
+        // something to paper over with retries here.
+        globalThis.fetch = vi.fn(async () => ({ status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+
+        const { fetchRaw } = createBungieFetch(25);
+        const result = await settle(fetchRaw('https://example.test/pgcr/1/', {}));
+
+        expect(result.httpStatus).toBe(500);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 });
