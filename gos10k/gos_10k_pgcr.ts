@@ -398,6 +398,41 @@ export function printReport(db: Database.Database, targetMembershipId: string, t
         console.log(`  ${row.status.padEnd(18)} ${row.n}`);
     }
 
+    // The two inputs to is_full_clear, reported raw and separately.
+    //
+    // The derived cross-tab below cannot show *why* a run counted: the rule is a
+    // disjunction, so "flag was true" and "flag was false but the phase was 0"
+    // collapse into the same 1. The first --limit 20 pass returned
+    // activityWasStartedFromBeginning = false on all twenty rows, nineteen of
+    // which were phase 0 — meaning the boolean alone would have reported zero
+    // full clears out of twenty. That is a fact about the data worth seeing on
+    // every run rather than rediscovering with an ad-hoc query.
+    //
+    // NULL is printed as NULL, never folded into 0: an absent startingPhaseIndex
+    // is the third arm of the disjunction, and it counts as a full clear by
+    // default. If that arm ever carries real weight, it has to be visible here.
+    const phaseFlag = db
+        .prepare(
+            `SELECT
+         COALESCE(CAST(starting_phase_index AS TEXT), 'NULL') AS phase,
+         COALESCE(CAST(activity_was_started_from_beginning AS TEXT), 'NULL') AS flag,
+         COALESCE(is_full_clear, 0) AS full_clear,
+         COUNT(*) AS n
+       FROM gos_10k_runs
+      WHERE pgcr_fetch_status = 'ok'
+      GROUP BY 1, 2, 3
+      ORDER BY n DESC`
+        )
+        .all() as Array<{ phase: string; flag: string; full_clear: number; n: number }>;
+
+    console.log('\nstarting_phase_index x activity_was_started_from_beginning:');
+    console.log('  phase  from_beginning  full_clear  count');
+    for (const row of phaseFlag) {
+        console.log(
+            `  ${row.phase.padEnd(6)} ${row.flag.padEnd(15)} ${String(row.full_clear).padEnd(11)} ${row.n}`
+        );
+    }
+
     const disagreements = db
         .prepare(`SELECT COUNT(*) AS n FROM gos_10k_runs WHERE duration_disagreement = 1`)
         .get() as { n: number };
