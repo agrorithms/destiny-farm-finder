@@ -55,13 +55,11 @@ export async function GET(request: NextRequest) {
 
         const body = {
             hours,
+            // RaidStatsRow is the wire contract; raidName is the only thing this layer adds.
+            // Which metrics respond to the scope toggle is documented by the nesting there.
             raids: rows.map(row => ({
-                raidKey: row.raidKey,
+                ...row,
                 raidName: raids[row.raidKey]?.name || row.raidKey,
-                fastestClearSeconds: row.fastestClearSeconds,
-                dnfRate: row.dnfRate,
-                classDistribution: row.classDistribution,
-                avgKda: row.avgKda,
             })),
         };
 
