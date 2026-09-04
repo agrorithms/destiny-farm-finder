@@ -1,6 +1,27 @@
 import { getDb } from './index';
 import type { PlayerInfo } from '../bungie/types';
 
+/**
+ * The two predicates that decide what counts as a cleared raid. They are NOT the same
+ * population and must not be collapsed onto one another — see CONTEXT.md's `Full Clear` and
+ * `Completion` entries, tests/db/full-clear-predicates.test.ts, and ADR 0006.
+ *
+ * Both assume `pgcrs` is aliased `p` and `pgcr_players` is aliased `pp`, which is why every
+ * query below uses those aliases. `raid_key IS NOT NULL` is deliberately NOT bundled in:
+ * "is this a raid at all" is a different question, and bundling it would make these unusable
+ * in a non-raid context. Call sites carry it themselves.
+ */
+
+/** Instance-level: the run reached the end, having been started from the beginning. */
+export const FULL_CLEAR = 'p.completed = 1 AND p.activity_was_started_from_beginning = 1';
+
+/**
+ * Player-level: this player finished, inside a Full Clear. The extra conjunct is not
+ * redundant — `pgcrs.completed` is written as "at least one player finished" (processPGCR),
+ * so being present for a clear is not the same as having cleared it.
+ */
+export const COMPLETION = `pp.completed = 1 AND ${FULL_CLEAR}`;
+
 const VALID_MEMBERSHIP_TYPES = new Set([1, 2, 3, 5, 6]);
 type RunnableStatement = {
     run: (...params: unknown[]) => unknown;
@@ -766,10 +787,8 @@ export function getPlayerRaidCompletionSummary(
     JOIN pgcrs p ON pp.instance_id = p.instance_id
     WHERE pp.membership_id = ?
       AND p.ended_at >= ?
-      AND pp.completed = 1
-      AND p.completed = 1
       AND p.raid_key IS NOT NULL
-      AND p.activity_was_started_from_beginning = 1
+      AND ${COMPLETION}
     GROUP BY p.raid_key
     ORDER BY completions DESC, p.raid_key ASC
   `).all(membershipId, cutoffTimestamp) as PlayerRaidCompletionSummary[];
@@ -786,13 +805,13 @@ export function getPlayerRaidPerformanceStats(
     SELECT
       p.raid_key as raidKey,
       COUNT(DISTINCT CASE
-        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        WHEN ${COMPLETION}
         THEN pp.instance_id END) as completions,
       CAST(ROUND(AVG(CASE
-        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        WHEN ${COMPLETION}
         THEN p.ended_at - p.period END)) AS INTEGER) as avgCompletionSeconds,
       MIN(CASE
-        WHEN pp.completed = 1 AND p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        WHEN ${COMPLETION}
         THEN p.ended_at - p.period END) as fastestClearSeconds,
       ROUND(CAST(SUM(CASE WHEN pp.completed = 0 THEN 1 ELSE 0 END) AS REAL)
         / COUNT(*), 4) as dnfRate,
@@ -861,18 +880,12 @@ export interface RaidScopeStats {
 }
 
 /**
- * "Full clear" as a bare SQL predicate, so the WHERE-tail and CASE-WHEN uses below share one
- * definition rather than two textually identical copies.
- */
-const FULL_CLEAR_PREDICATE = 'p.completed = 1 AND p.activity_was_started_from_beginning = 1';
-
-/**
  * The instance-level predicate that defines each scope's population. Adding a scope here is
  * the only edit a new scope needs outside the response assembly, which stops compiling until
  * the new key is supplied. All Attempts is every in-window instance, so its predicate is empty.
  */
 const RAID_SCOPE_PREDICATES = {
-    fullClear: FULL_CLEAR_PREDICATE,
+    fullClear: FULL_CLEAR,
     allAttempts: '',
 } as const;
 
@@ -1021,7 +1034,7 @@ export function getRaidStats(
       p.raid_key as raidKey,
       COUNT(*) as instanceCount,
       MIN(CASE
-        WHEN ${FULL_CLEAR_PREDICATE}
+        WHEN ${FULL_CLEAR}
         THEN p.ended_at - p.period END) as fastestClearSeconds,
       ROUND(CAST(SUM(CASE WHEN p.completed = 0 THEN 1 ELSE 0 END) AS REAL)
         / COUNT(*), 4) as dnfRate
@@ -1065,11 +1078,10 @@ export function getFullClearCount(hoursBack: number): number {
 
     const row = db.prepare(`
     SELECT COUNT(*) as n
-    FROM pgcrs
-    WHERE ended_at >= ?
-      AND completed = 1
-      AND activity_was_started_from_beginning = 1
-      AND raid_key IS NOT NULL
+    FROM pgcrs p
+    WHERE p.ended_at >= ?
+      AND p.raid_key IS NOT NULL
+      AND ${FULL_CLEAR}
   `).get(cutoffTimestamp) as { n: number };
 
     return row.n;
@@ -1104,10 +1116,8 @@ export function getPlayerRecentCompletions(
     JOIN pgcrs p ON pp.instance_id = p.instance_id
     WHERE pp.membership_id = ?
       AND p.ended_at >= ?
-      AND pp.completed = 1
-      AND p.completed = 1
       AND p.raid_key IS NOT NULL
-      AND p.activity_was_started_from_beginning = 1
+      AND ${COMPLETION}
     ORDER BY p.ended_at DESC
     LIMIT ?
   `).all(membershipId, cutoffTimestamp, limit) as PlayerRecentCompletion[];
@@ -1135,14 +1145,12 @@ export function getPlayerRaidTeammateSummary(
         p.instance_id,
         p.raid_key,
         (p.ended_at - p.period) as durationSeconds
-      FROM pgcr_players self
-      JOIN pgcrs p ON self.instance_id = p.instance_id
-      WHERE self.membership_id = ?
+      FROM pgcr_players pp
+      JOIN pgcrs p ON pp.instance_id = p.instance_id
+      WHERE pp.membership_id = ?
         AND p.ended_at >= ?
-        AND self.completed = 1
-        AND p.completed = 1
         AND p.raid_key IS NOT NULL
-        AND p.activity_was_started_from_beginning = 1
+        AND ${COMPLETION}
     )
     SELECT
       pr.raid_key as raidKey,

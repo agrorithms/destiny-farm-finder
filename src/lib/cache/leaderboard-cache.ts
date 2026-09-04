@@ -16,7 +16,7 @@
  * the raw leaderboard without the cache layer.
  */
 import { getDb } from '../db';
-import { buildRaidFilterClause, type RaidFilters } from '../db/queries';
+import { COMPLETION, buildRaidFilterClause, type RaidFilters } from '../db/queries';
 import { getAllRaidDefinitions } from '../bungie/manifest';
 import { envSeconds, envMs } from '../env';
 import { getOrCompute, type CacheState } from './swr-cache';
@@ -131,7 +131,8 @@ function formatDisplayName(entry: LeaderboardDbRow): string {
 /**
  * Runs the leaderboard aggregation. Empty `raidKeys` = all raids (no filter);
  * a single key yields the same ranking as the per-raid individual query.
- * `fullClearsOnly` is always applied (forced true on every cached + bypass path).
+ * `fullClearsOnly` is always applied (forced true on every cached + bypass path); the
+ * predicate itself is `COMPLETION`, defined once in queries.ts.
  */
 export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number, filters?: RaidFilters): LeaderboardResponseEntry[] {
     const db = getDb();
@@ -150,8 +151,7 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
         JOIN pgcrs p ON pp.instance_id = p.instance_id
         LEFT JOIN players pl ON pp.membership_id = pl.membership_id
         WHERE p.ended_at >= ?
-          AND pp.completed = 1
-          AND p.completed = 1
+          AND ${COMPLETION}
     `;
 
     const params: SqlParam[] = [cutoff];
@@ -165,8 +165,6 @@ export function runLeaderboardRows(hours: number, raidKeys: string[], limit: num
     const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
     query += filterClause;
     params.push(...filterParams);
-
-    query += ` AND p.activity_was_started_from_beginning = 1`;
 
     // Within a tie group the earliest achiever ranks highest: lastClearAt is the
     // completion time of the most recent counted clear, so a stale PGCR found
