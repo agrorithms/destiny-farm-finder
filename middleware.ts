@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { archiveCacheControl } from '@/lib/http/cache';
 
 interface RateLimitEntry {
     count: number;
@@ -216,6 +217,15 @@ function getRateLimitRules(request: NextRequest): RateLimitRule[] {
         return [{ bucket: 'discovery', limit: 3, windowMs: 15 * 60_000 }];
     }
 
+    // Reserved before any /api/gos10k route exists. The matcher below is an explicit
+    // list, so anything unlisted gets no rate limiting at all and does so *silently* —
+    // the failure mode of forgetting is an endpoint that simply works until someone
+    // loops 13,420 detail requests on a 2-OCPU box. Generous on purpose: this is
+    // read-only SQLite over a frozen file, not a Bungie-backed endpoint.
+    if (pathname.startsWith('/api/gos10k/')) {
+        return [{ bucket: 'gos10k-api', limit: 120, windowMs: 60_000 }];
+    }
+
     return [];
 }
 
@@ -235,7 +245,18 @@ export function middleware(request: NextRequest) {
     const rateLimit = applyRateLimit(request, getRateLimitRules(request));
     if (rateLimit) return rateLimit;
 
-    return NextResponse.next();
+    const response = NextResponse.next();
+
+    // The Archive is frozen, so a stale response is the correct one. Set here rather
+    // than in the route because a server component cannot set response headers, and
+    // this keeps the one page whose caching rule is the opposite of every other page's
+    // beside the rate limits it also needs. Cloudflare has the final say — verify
+    // against cf-cache-status on prod (docs/decisions.md).
+    if (pathname === '/gos10k' || pathname.startsWith('/gos10k/')) {
+        response.headers.set('Cache-Control', archiveCacheControl());
+    }
+
+    return response;
 }
 
 export const config = {
@@ -247,5 +268,8 @@ export const config = {
         '/api/leaderboard',
         '/api/active-sessions',
         '/api/players/:path*',
+        '/api/gos10k/:path*',
+        '/gos10k/:path*',
+        '/gos10k',
     ],
 };
