@@ -145,7 +145,7 @@ Browser TTL inherits this bug.
 
 The repo had no unit test framework. Vitest is now wired up with tests covering `processPGCR`,
 the leaderboard query, `ended_at` derivation, Bungie error handling, and the rate limiter. Full
-plan of record: `docs/testing-framework-plan.md`. Strategy decisions: ADR 0003 (real SQLite files,
+plan of record: `docs/handoffs/testing-framework-handoff.md`. Strategy decisions: ADR 0003 (real SQLite files,
 not `:memory:`) and ADR 0004 (mock only at the network boundary).
 
 Recorded here are the findings that changed the shape of the work, and the defects found along the
@@ -155,7 +155,8 @@ way that were **not** fixed.
 
 `src/lib/crawler/pgcr.ts` derived `isFullClear` from a three-way `||`. Nothing read it.
 `fetchAndStorePGCR` persists Bungie's raw `activityWasStartedFromBeginning`, and every leaderboard
-filters on that column (`leaderboard-cache.ts:175`, `queries.ts:760/781/820/855`).
+filters on that column — since issue #70, through the `FULL_CLEAR` and `COMPLETION` constants in
+`queries.ts` rather than a dozen inline copies.
 
 It is also incorrect. Bungie now reports `startingPhaseIndex: 0` on every PGCR — verified against
 live API captures, including confirmed checkpoint runs where `activityWasStartedFromBeginning` is

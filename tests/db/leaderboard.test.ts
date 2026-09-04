@@ -46,7 +46,7 @@ describe('who appears on the leaderboard', () => {
         // activityWasStartedFromBeginning. A derived alternative once existed
         // (ProcessedPGCR.isFullClear) that reported every run as a full clear;
         // it was never persisted and has been deleted.
-        // See docs/testing-framework-plan.md.
+        // See docs/decisions.md.
         seedRun({ instanceId: '1', completedBy: ['p1'], startedFromBeginning: false });
 
         expect(runLeaderboardRows(HOURS_BACK, [], 10)).toEqual([]);
