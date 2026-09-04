@@ -33,10 +33,13 @@ active-sessions list cover. Other activities are observed but never displayed.
 _Avoid_: activity (too broad), instance
 
 **Full Clear**:
-A raid played from the first encounter through the final boss, as opposed to joining at a
-checkpoint. Only Bungie's own report that the activity began at the start establishes this — no
-other signal is authoritative, and one that looks like it is has been wrong since Bungie stopped
-publishing it.
+A raid that began at the first encounter, as opposed to at a checkpoint, and reached the final
+boss. Both halves are required, and each has its own signal: only Bungie's own report that the
+activity began at the start establishes the first — no other signal is authoritative, and the
+derived one that looked like it was had been wrong ever since Bungie stopped publishing the field
+it read. The second means **at least one** player finished, not all of them, so a Full Clear can
+contain players who did not finish it themselves. That is what separates it from a Completion,
+which is about one particular player.
 _Avoid_: complete run, fresh run
 
 **Checkpoint Run**:

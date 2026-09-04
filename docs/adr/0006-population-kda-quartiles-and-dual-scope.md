@@ -43,6 +43,13 @@ interpolating method would have needed one.
   (Player-Runs — 1,084,154 over the last 168h) and `instanceCount` per row (raid instances —
   372,810 over the same window, the denominator of `dnfRate`). This is the same units discipline as
   [ADR 0001](0001-fireteam-denominated-display-cap.md).
+- **The `fullClear` scope's population is instance-level, and deliberately admits players who
+  did not personally finish.** It is `p.completed = 1 AND p.activity_was_started_from_beginning
+  = 1` with no per-player conjunct, so a player present for a clear they did not finish is one of
+  its Player-Runs — ~16% of them. That is what separates it from the player-level predicate the
+  leaderboard and player pages use, and collapsing the two onto one definition would move the
+  published quartiles and class distribution. The pair is `FULL_CLEAR` / `COMPLETION` in
+  `src/lib/db/queries.ts`, pinned by `tests/db/full-clear-predicates.test.ts`.
 - **Two different zero-death guards coexist in one query, deliberately.** The quartiles use
   per-row `MAX(deaths, 1)`, since a single flawless Player-Run would otherwise divide by zero. The
   aggregate uses `MAX(SUM(deaths), 1)`, which fires only if *every* Player-Run in a raid and scope

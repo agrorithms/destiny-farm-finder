@@ -145,28 +145,32 @@ Browser TTL inherits this bug.
 
 The repo had no unit test framework. Vitest is now wired up with tests covering `processPGCR`,
 the leaderboard query, `ended_at` derivation, Bungie error handling, and the rate limiter. Full
-plan of record: `docs/testing-framework-plan.md`. Strategy decisions: ADR 0003 (real SQLite files,
+plan of record: `docs/handoffs/testing-framework-handoff.md`. Strategy decisions: ADR 0003 (real SQLite files,
 not `:memory:`) and ADR 0004 (mock only at the network boundary).
 
 Recorded here are the findings that changed the shape of the work, and the defects found along the
 way that were **not** fixed.
 
-### `ProcessedPGCR.isFullClear` is dead code, and would be wrong if used
+### `ProcessedPGCR.isFullClear` was dead code, and would have been wrong if used
 
-`src/lib/crawler/pgcr.ts:36` derives `isFullClear` from a three-way `||`. Nothing reads it.
+`src/lib/crawler/pgcr.ts` derived `isFullClear` from a three-way `||`. Nothing read it.
 `fetchAndStorePGCR` persists Bungie's raw `activityWasStartedFromBeginning`, and every leaderboard
-filters on that column (`leaderboard-cache.ts:175`, `queries.ts:760/781/820/855`).
+filters on that column — since issue #70, through the `FULL_CLEAR` and `COMPLETION` constants in
+`queries.ts` rather than a dozen inline copies.
 
-It is also incorrect. Bungie now reports `startingPhaseIndex: 0` on every PGCR — verified against
-live API captures, including confirmed checkpoint runs where `activityWasStartedFromBeginning` is
-`false`. The field is present but inert. So the `startingPhaseIndex === 0` branch fires
-unconditionally and `isFullClear` is `true` for 100% of runs. Of those, 568,648 have
+It was also incorrect, for the reason recorded below under `startingPhaseIndex` is sent, and is
+always `0`: Bungie reports it as `0` on every PGCR — verified against live API captures,
+including confirmed checkpoint runs where `activityWasStartedFromBeginning` is
+`false`. The field is present but inert, so the `startingPhaseIndex === 0` branch fired
+unconditionally and `isFullClear` was `true` for 100% of runs. Of those, 568,648 have
 `activity_was_started_from_beginning = 0`, i.e. they are checkpoint runs. Wiring this field into
 the writer would inflate every full-clear leaderboard by roughly 2.2×.
 
-**Action:** delete the field in a future change. Deliberately left untested — pinning dead
-behaviour would only make removal harder. The reasoning is duplicated in
-`src/lib/crawler/pgcr.test.ts` so whoever finds it there does not have to come looking here.
+**Action taken:** the field was deleted as part of issue #70 (consolidating the full-clear
+predicates). It was deliberately left untested — pinning dead behaviour would only have made
+removal harder. This section stays because the 2.2× finding is why the guarding tests in
+`tests/db/full-clear-flag.test.ts` exist: they pin the *writer* against ever adopting a derivation
+like it.
 
 ### `formatDisplayName` drops the `#Code` when the code is zero
 

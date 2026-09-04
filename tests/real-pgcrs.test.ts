@@ -50,9 +50,8 @@ describe('a checkpoint run', () => {
 
     it('still carries a zero starting phase index', () => {
         // The captured proof that startingPhaseIndex no longer discriminates
-        // anything: Bungie sends 0 even here, on a confirmed checkpoint run. This
-        // is why ProcessedPGCR.isFullClear reports true for every run — its
-        // `startingPhaseIndex === 0` branch always fires. See docs/decisions.md.
+        // anything: Bungie sends 0 even here, on a confirmed checkpoint run.
+        // See docs/decisions.md.
         expect(as(checkpoint).startingPhaseIndex).toBe(0);
     });
 

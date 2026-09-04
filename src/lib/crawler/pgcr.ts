@@ -14,7 +14,6 @@ export interface ProcessedPGCR {
     activityHash: number;
     raidKey: string | undefined;
     period: number;
-    isFullClear: boolean;
     completed: boolean;
     difficultyTier: number | undefined;
     uniquePlayerCount: number;
@@ -34,13 +33,6 @@ export function processPGCR(pgcr: DestinyPostGameCarnageReportData): ProcessedPG
         (entry) => entry.values?.completed?.basic?.value === 1
     );
 
-    // Determine if this was a full clear (started from beginning)
-    const isFullClear =
-        pgcr.activityWasStartedFromBeginning === true ||
-        pgcr.startingPhaseIndex === 0 ||
-        pgcr.startingPhaseIndex === undefined ||
-        pgcr.startingPhaseIndex === null;
-
     // Extract player info
     const players: PlayerInfo[] = pgcr.entries.map((entry) => ({
         membershipId: entry.player.destinyUserInfo.membershipId,
@@ -59,7 +51,6 @@ export function processPGCR(pgcr: DestinyPostGameCarnageReportData): ProcessedPG
         activityHash,
         raidKey,
         period: isoToUnix(pgcr.period),
-        isFullClear,
         completed: anyoneCompleted,
         difficultyTier: pgcr.activityDifficultyTier,
         uniquePlayerCount,
