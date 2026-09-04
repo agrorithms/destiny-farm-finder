@@ -28,6 +28,18 @@ const CONFIG = {
 // page-exhaustion signal: a short page means there is nothing after it.
 const PAGE_COUNT = 250;
 
+/**
+ * Marks rows inserted by this pass, which no longer filters on completion.
+ *
+ * The 10,023 rows the first pass wrote carry 'get_activity_history' and are
+ * left alone — INSERT OR IGNORE drops a conflicting insert whole, so nothing
+ * already in the table is rewritten. This string therefore means "inserted by
+ * the unfiltered crawl", which is a fact about provenance; whether the run was
+ * completed is the `completed` column's job. Folding completion into the source
+ * would make the two columns restate each other and lose the generation.
+ */
+const SOURCE = 'get_activity_history_unfiltered';
+
 const API_KEY = process.env.NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY;
 if (!API_KEY) {
     throw new Error(
@@ -59,6 +71,7 @@ interface RunRow {
     endedAt: number;
     durationSeconds: number;
     completionReason: number | null;
+    completed: boolean;
     playerCount: number;
 }
 
@@ -154,9 +167,14 @@ async function run() {
                 row.completionReason,
                 null, // starting_phase_index — PGCR-only, backfilled later
                 null, // activity_was_started_from_beginning — PGCR-only, backfilled later
-                1,
+                // Read off the row, never a literal. The old hardcoded 1 was
+                // only true because the loop below refused to build a row for
+                // anything else; now that it does, a literal would label every
+                // incomplete run as completed — and INSERT OR IGNORE means a
+                // corrective rerun could not undo it.
+                row.completed ? 1 : 0,
                 row.playerCount,
-                'get_activity_history'
+                SOURCE
             );
 
             if (result.changes > 0) inserted++;
@@ -176,6 +194,7 @@ async function run() {
 
         let recordedCount = 0;
         let duplicateCount = 0;
+        let incompleteCount = 0;
 
         for (const { characterId: charId, deleted } of characters) {
             if (recordedCount >= CONFIG.targetPgcrCount) break;
@@ -204,25 +223,26 @@ async function run() {
                     // Filter 1: Check if the activity is Garden of Salvation
                     if (!GOS_HASHES.has(refId)) continue;
 
-                    // Filter 2: Target player must have completed the activity.
+                    // The activity hash is now the ONLY filter. `completed`
+                    // and `completionReason` are recorded, not filtered on.
                     //
-                    // Note this is NOT "full clear from the beginning".
-                    // Activity History carries no activityWasStartedFromBeginning
-                    // or startingPhaseIndex — those are PGCR-only — so a run
-                    // joined in progress and then finished passes this filter.
-                    // Tightening it to a true full clear needs a PGCR pass over
-                    // the stored rows; the two columns stay NULL until then.
+                    // Filtering on completion was the first pass's rule and it
+                    // pinned the column to a single value, which is useless for
+                    // the question this second pass exists to answer: which GoS
+                    // runs did he start and not finish. Same argument that kept
+                    // completionReason unfiltered from the beginning — a column
+                    // with no variance cannot be analysed. Observed on this
+                    // account: reason 0 alongside completed=1, 255 alongside
+                    // completed=0.
                     //
-                    // completionReason is recorded but deliberately NOT filtered
-                    // on: filtering would pin every stored row to 0 and leave the
-                    // column with no variance, which is useless for working out
-                    // what the field actually means. Observed so far on this
-                    // account: 0 alongside completed=1, 255 alongside
-                    // completed=0. Anything else that shows up deeper in the
-                    // history now lands in the table where it can be counted.
+                    // Note that completed=1 is still NOT "full clear from the
+                    // beginning". Activity History carries no
+                    // activityWasStartedFromBeginning or startingPhaseIndex —
+                    // those are PGCR-only — so a run joined in progress and then
+                    // finished looks identical here. The PGCR backfill settles
+                    // it; the two columns stay NULL until then.
                     const completionReason = values.completionReason?.basic?.value ?? null;
                     const completed = values.completed?.basic?.value === 1;
-                    if (!completed) continue;
 
                     // Extract and calculate timestamps
                     const startTimestamp = Math.floor(new Date(act.period).getTime() / 1000);
@@ -236,18 +256,28 @@ async function run() {
                         endedAt: startTimestamp + durationSec,
                         durationSeconds: durationSec,
                         completionReason,
+                        completed,
                         playerCount: values.playerCount?.basic?.value || 0,
                     });
                 }
 
-                // INSERT OR IGNORE avoids duplicates across characters
+                // INSERT OR IGNORE avoids duplicates across characters, and on a
+                // rerun it is also what protects the first pass's rows: a
+                // conflicting insert is dropped whole, so an existing instance
+                // keeps its original source and completed value.
                 const { inserted, duplicates } = insertPage(rows, CONFIG.targetPgcrCount - recordedCount);
                 recordedCount += inserted;
                 duplicateCount += duplicates;
 
+                // Incomplete runs are broken out because they are the reason
+                // this pass exists — a page reporting matches but no incompletes
+                // is the signal that the filter change did not take effect.
+                const incomplete = rows.filter((r) => !r.completed).length;
+                incompleteCount += incomplete;
+
                 console.log(
                     `Character ${charId}${deleted ? ' (deleted)' : ''} page ${page}: ${activities.length} activities, ` +
-                    `${rows.length} matched, +${inserted} new, ${duplicates} dupes ` +
+                    `${rows.length} matched (${incomplete} incomplete), +${inserted} new, ${duplicates} dupes ` +
                     `(${recordedCount}/${CONFIG.targetPgcrCount})`
                 );
 
@@ -255,7 +285,11 @@ async function run() {
             }
         }
 
-        console.log(`Done! Total unique matching PGCRs recorded: ${recordedCount} (${duplicateCount} already present)`);
+        console.log(
+            `Done! Total unique matching PGCRs recorded: ${recordedCount} ` +
+            `(${duplicateCount} already present). ` +
+            `${incompleteCount} of the matched rows were incomplete runs.`
+        );
         console.log(`Database: ${CONFIG.dbPath}`);
     } finally {
         db.close();
