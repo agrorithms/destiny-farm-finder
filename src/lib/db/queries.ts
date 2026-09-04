@@ -839,12 +839,170 @@ export function buildRaidFilterClause(filters?: RaidFilters): { clause: string; 
     return { clause, params };
 }
 
-export interface RaidStatsRow {
-    raidKey: string;
-    fastestClearSeconds: number | null;
-    dnfRate: number;
+export interface RaidKdaQuartiles {
+    p25: number;
+    p50: number;
+    p75: number;
+}
+
+/**
+ * Every metric that depends on which instances count. Reported twice per raid — once under
+ * each scope — so a client can toggle without a refetch and can never be unsure which
+ * population produced a number. See docs/adr/0006-population-kda-quartiles-and-dual-scope.md.
+ */
+export interface RaidScopeStats {
+    /** Nearest-rank p25/p50/p75 of per-Player-Run KDA. Null iff sampleSize is 0. */
+    kda: RaidKdaQuartiles | null;
+    /** (SUM(kills) + SUM(assists)) / SUM(deaths) over the same population. Null iff sampleSize is 0. */
+    aggregateKda: number | null;
+    /** Player-Runs in this scope — not instances. See instanceCount for those. */
+    sampleSize: number;
     classDistribution: Record<string, number>;
-    avgKda: number | null;
+}
+
+/**
+ * "Full clear" as a bare SQL predicate, so the WHERE-tail and CASE-WHEN uses below share one
+ * definition rather than two textually identical copies.
+ */
+const FULL_CLEAR_PREDICATE = 'p.completed = 1 AND p.activity_was_started_from_beginning = 1';
+
+/**
+ * The instance-level predicate that defines each scope's population. Adding a scope here is
+ * the only edit a new scope needs outside the response assembly, which stops compiling until
+ * the new key is supplied. All Attempts is every in-window instance, so its predicate is empty.
+ */
+const RAID_SCOPE_PREDICATES = {
+    fullClear: FULL_CLEAR_PREDICATE,
+    allAttempts: '',
+} as const;
+
+export type RaidScope = keyof typeof RAID_SCOPE_PREDICATES;
+
+export type RaidStatsRow = {
+    raidKey: string;
+    /** Full-clear-only by definition, which is why it sits outside the scope toggle. */
+    fastestClearSeconds: number | null;
+    /** All-instances by definition — degenerate (always 0) under a full-clear scope. */
+    dnfRate: number;
+    /** Raid instances in window — the denominator of dnfRate. A different unit from sampleSize. */
+    instanceCount: number;
+} & Record<RaidScope, RaidScopeStats>;
+
+/** A scope with no Player-Runs at all. A factory, so callers never share one mutable row. */
+function emptyScopeStats(): RaidScopeStats {
+    return { kda: null, aggregateKda: null, sampleSize: 0, classDistribution: {} };
+}
+
+/** The window and filters every scope query runs against; identical across scopes. */
+interface ScopeQueryContext {
+    cutoff: number;
+    filterClause: string;
+    filterParams: (string | number)[];
+}
+
+interface ScopeRow {
+    raidKey: string;
+    sampleSize: number;
+    aggregateKda: number | null;
+    p25: number | null;
+    p50: number | null;
+    p75: number | null;
+    classDistribution: string;
+}
+
+/**
+ * Every scope-sensitive metric for one scope, in one pass over that scope's Player-Runs.
+ *
+ * The `runs` CTE is the single definition of the scope's population — quartiles, aggregate and
+ * class counts all derive from it, which is what makes the class counts sum to sampleSize by
+ * construction rather than by two WHERE clauses staying in sync. MATERIALIZED keeps SQLite from
+ * re-running the pgcrs join once per reference.
+ *
+ * Quartiles are nearest rank: rank ceil(n * P / 100) of the KDA-ordered rows, expressed with
+ * SQLite integer division as (n * P + 99) / 100. The MAX(..., 1) is what makes n = 1 work.
+ * Nearest rank means every published percentile is a KDA some player actually achieved, and no
+ * minimum-sample threshold is needed — an interpolating method would have needed one.
+ */
+function queryScope(
+    { cutoff, filterClause, filterParams }: ScopeQueryContext,
+    scope: RaidScope
+): Map<string, RaidScopeStats> {
+    const db = getDb();
+    const predicate = RAID_SCOPE_PREDICATES[scope];
+    const scopeClause = predicate ? ` AND ${predicate}` : '';
+
+    const rows = db.prepare(`
+    WITH runs AS MATERIALIZED (
+      SELECT
+        p.raid_key as raidKey,
+        pp.kills as kills,
+        pp.deaths as deaths,
+        pp.assists as assists,
+        pp.character_class as characterClass,
+        -- Per-row zero-death guard: one flawless Player-Run would otherwise divide by zero.
+        -- Deliberately NOT the same guard as the aggregate's below.
+        CAST(pp.kills + pp.assists AS REAL) / MAX(pp.deaths, 1) as kda
+      FROM pgcr_players pp
+      JOIN pgcrs p ON pp.instance_id = p.instance_id
+      WHERE p.ended_at >= ?
+        AND p.raid_key IS NOT NULL
+        ${scopeClause}
+        ${filterClause}
+    ),
+    ranked AS (
+      SELECT raidKey, kda, ROW_NUMBER() OVER (PARTITION BY raidKey ORDER BY kda) as rn
+      FROM runs
+    ),
+    totals AS (
+      SELECT
+        raidKey,
+        COUNT(*) as n,
+        -- Population-level zero-death guard: fires only if EVERY Player-Run in this raid and
+        -- scope had zero deaths. Collapsing it into the per-row guard changes both statistics.
+        ROUND(CAST(SUM(kills) + SUM(assists) AS REAL) / MAX(SUM(deaths), 1), 2) as aggregateKda,
+        MAX((COUNT(*) * 25 + 99) / 100, 1) as r25,
+        MAX((COUNT(*) * 50 + 99) / 100, 1) as r50,
+        MAX((COUNT(*) * 75 + 99) / 100, 1) as r75
+      FROM runs
+      GROUP BY raidKey
+    ),
+    classes AS (
+      -- 'Unknown' is a real stored class, not a null placeholder — it stays its own key.
+      SELECT raidKey, json_group_object(characterClass, n) as classDistribution
+      FROM (SELECT raidKey, characterClass, COUNT(*) as n FROM runs GROUP BY raidKey, characterClass)
+      GROUP BY raidKey
+    )
+    SELECT
+      t.raidKey as raidKey,
+      t.n as sampleSize,
+      t.aggregateKda as aggregateKda,
+      ROUND(MAX(CASE WHEN r.rn = t.r25 THEN r.kda END), 2) as p25,
+      ROUND(MAX(CASE WHEN r.rn = t.r50 THEN r.kda END), 2) as p50,
+      ROUND(MAX(CASE WHEN r.rn = t.r75 THEN r.kda END), 2) as p75,
+      c.classDistribution as classDistribution
+    FROM totals t
+    -- Only the three ranked rows the percentiles name reach the GROUP BY.
+    JOIN ranked r ON r.raidKey = t.raidKey AND r.rn IN (t.r25, t.r50, t.r75)
+    JOIN classes c ON c.raidKey = t.raidKey
+    GROUP BY t.raidKey
+  `).all(cutoff, ...filterParams) as ScopeRow[];
+
+    const byRaid = new Map<string, RaidScopeStats>();
+    for (const row of rows) {
+        // A raid only reaches this loop if it has Player-Runs in the scope, so the percentiles
+        // are non-null. Falling back rather than asserting keeps a broken invariant from
+        // publishing a null typed as a number.
+        const kda = row.p25 !== null && row.p50 !== null && row.p75 !== null
+            ? { p25: row.p25, p50: row.p50, p75: row.p75 }
+            : null;
+        byRaid.set(row.raidKey, {
+            kda,
+            aggregateKda: row.aggregateKda,
+            sampleSize: row.sampleSize,
+            classDistribution: JSON.parse(row.classDistribution) as Record<string, number>,
+        });
+    }
+    return byRaid;
 }
 
 export function getRaidStats(
@@ -856,11 +1014,14 @@ export function getRaidStats(
 
     const { clause: filterClause, params: filterParams } = buildRaidFilterClause(filters);
 
+    // The row set is driven by this query, not by the scope CTEs: a raid with instances but no
+    // Player-Runs in a scope must still appear, with sampleSize 0 and kda null.
     const scalarRows = db.prepare(`
     SELECT
       p.raid_key as raidKey,
+      COUNT(*) as instanceCount,
       MIN(CASE
-        WHEN p.completed = 1 AND p.activity_was_started_from_beginning = 1
+        WHEN ${FULL_CLEAR_PREDICATE}
         THEN p.ended_at - p.period END) as fastestClearSeconds,
       ROUND(CAST(SUM(CASE WHEN p.completed = 0 THEN 1 ELSE 0 END) AS REAL)
         / COUNT(*), 4) as dnfRate
@@ -869,51 +1030,26 @@ export function getRaidStats(
       AND p.raid_key IS NOT NULL
       ${filterClause}
     GROUP BY p.raid_key
-  `).all(cutoff, ...filterParams) as { raidKey: string; fastestClearSeconds: number | null; dnfRate: number }[];
+  `).all(cutoff, ...filterParams) as {
+        raidKey: string;
+        instanceCount: number;
+        fastestClearSeconds: number | null;
+        dnfRate: number;
+    }[];
 
-    const kdaRows = db.prepare(`
-    SELECT
-      p.raid_key as raidKey,
-      ROUND(AVG(
-        CAST(pp.kills + pp.assists AS REAL) / MAX(pp.deaths, 1)
-      ), 2) as avgKda
-    FROM pgcr_players pp
-    JOIN pgcrs p ON pp.instance_id = p.instance_id
-    WHERE p.ended_at >= ?
-      AND p.raid_key IS NOT NULL
-      AND p.completed = 1
-      AND p.activity_was_started_from_beginning = 1
-      ${filterClause}
-    GROUP BY p.raid_key
-  `).all(cutoff, ...filterParams) as { raidKey: string; avgKda: number | null }[];
-
-    const classRows = db.prepare(`
-    SELECT
-      p.raid_key as raidKey,
-      pp.character_class as characterClass,
-      COUNT(*) as count
-    FROM pgcr_players pp
-    JOIN pgcrs p ON pp.instance_id = p.instance_id
-    WHERE p.ended_at >= ?
-      AND p.raid_key IS NOT NULL
-      ${filterClause}
-    GROUP BY p.raid_key, pp.character_class
-  `).all(cutoff, ...filterParams) as { raidKey: string; characterClass: string; count: number }[];
-
-    const kdaMap = new Map(kdaRows.map(r => [r.raidKey, r.avgKda]));
-    const classMap = new Map<string, Record<string, number>>();
-    for (const row of classRows) {
-        const existing = classMap.get(row.raidKey) ?? {};
-        existing[row.characterClass] = row.count;
-        classMap.set(row.raidKey, existing);
-    }
+    const scopeContext: ScopeQueryContext = { cutoff, filterClause, filterParams };
+    const fullClear = queryScope(scopeContext, 'fullClear');
+    const allAttempts = queryScope(scopeContext, 'allAttempts');
 
     return scalarRows.map(row => ({
         raidKey: row.raidKey,
         fastestClearSeconds: row.fastestClearSeconds,
         dnfRate: row.dnfRate,
-        classDistribution: classMap.get(row.raidKey) ?? {},
-        avgKda: kdaMap.get(row.raidKey) ?? null,
+        instanceCount: row.instanceCount,
+        // A raid can have instances in-window but no Player-Runs in a scope; that — and only
+        // that — is when a scope reports sampleSize 0 and kda null.
+        fullClear: fullClear.get(row.raidKey) ?? emptyScopeStats(),
+        allAttempts: allAttempts.get(row.raidKey) ?? emptyScopeStats(),
     }));
 }
 

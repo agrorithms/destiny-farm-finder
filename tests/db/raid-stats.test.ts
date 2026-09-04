@@ -8,7 +8,7 @@ beforeEach(() => { resetTestDb(); });
 const SALVATIONS_EDGE_HASH = 2192826039;
 
 describe('getRaidStats', () => {
-    it('returns per-raid fastest clear, DNF rate, class distribution, and avg KDA', () => {
+    it('returns per-raid fastest clear and DNF rate', () => {
         // Salvation's Edge: 2 completed, 1 DNF
         seedRun({ instanceId: '1', completedBy: ['p1', 'p2'], activityHash: SALVATIONS_EDGE_HASH, activityDurationSeconds: 3600, kills: 80, deaths: 10, assists: 30 });
         seedRun({ instanceId: '2', completedBy: ['p3'], activityHash: SALVATIONS_EDGE_HASH, activityDurationSeconds: 1200, kills: 50, deaths: 5, assists: 20 });
@@ -22,13 +22,17 @@ describe('getRaidStats', () => {
         expect(se!.dnfRate).toBeCloseTo(1 / 3, 4);
     });
 
-    it('computes avgKda across all players in completed instances', () => {
-        // Two players complete: p1 gets (80+30)/max(10,1)=11, p2 gets (80+30)/max(10,1)=11
-        // avg = 11
-        seedRun({ instanceId: '1', completedBy: ['p1', 'p2'], kills: 80, deaths: 10, assists: 30 });
+    // Replaces the old `avgKda` assertion. That field was a mean of per-player ratios;
+    // aggregateKda is ratio-of-sums over the same population, so the number differs.
+    it('reports aggregateKda as ratio-of-sums, not a mean of per-player ratios', () => {
+        // p1: (80+30)/10 = 11.0, p2: (10+0)/1 = 10.0 — mean of ratios would be 10.5
+        seedRun({ instanceId: '1', completedBy: ['p1'], kills: 80, deaths: 10, assists: 30 });
+        seedRun({ instanceId: '2', completedBy: ['p2'], kills: 10, deaths: 1, assists: 0 });
 
         const stats = getRaidStats(24);
-        expect(stats[0].avgKda).toBe(11);
+        // (80+10 + 30+0) / (10+1) = 120/11 = 10.909...
+        expect(stats[0].fullClear.aggregateKda).toBe(10.91);
+        expect(stats[0].fullClear.sampleSize).toBe(2);
     });
 
     it('returns class distribution as counts per class', () => {
@@ -36,7 +40,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24);
         // seedRun defaults all players to Warlock
-        expect(stats[0].classDistribution).toEqual({ Warlock: 3 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 3 });
     });
 
     it('respects the hours time window', () => {
@@ -45,7 +49,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(4);
         // Only one instance in window, so one player total
-        expect(stats[0].classDistribution).toEqual({ Warlock: 1 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 1 });
     });
 
     it('difficulty=master filters to master-only instances', () => {
@@ -55,7 +59,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24, { difficulty: 'master' });
         expect(stats).toHaveLength(1);
-        expect(stats[0].classDistribution).toEqual({ Warlock: 1 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 1 });
     });
 
     it('difficulty=normal includes NULL and non-master tiers', () => {
@@ -65,7 +69,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24, { difficulty: 'normal' });
         expect(stats).toHaveLength(1);
-        expect(stats[0].classDistribution).toEqual({ Warlock: 2 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 2 });
     });
 
     it('exactPlayers filters to exact unique_player_count match', () => {
@@ -75,7 +79,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24, { exactPlayers: 2 });
         expect(stats).toHaveLength(1);
-        expect(stats[0].classDistribution).toEqual({ Warlock: 2 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 2 });
     });
 
     it('maxPlayers filters by unique_player_count', () => {
@@ -86,7 +90,7 @@ describe('getRaidStats', () => {
         const stats = getRaidStats(24, { maxPlayers: 2 });
         expect(stats).toHaveLength(1);
         // 1 + 2 players from the two qualifying instances
-        expect(stats[0].classDistribution).toEqual({ Warlock: 3 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 3 });
     });
 
     it('filters compose: difficulty + maxPlayers', () => {
@@ -96,7 +100,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24, { difficulty: 'master', maxPlayers: 3 });
         expect(stats).toHaveLength(1);
-        expect(stats[0].classDistribution).toEqual({ Warlock: 1 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 1 });
     });
 
     it('excludes NULL unique_player_count when maxPlayers is specified', () => {
@@ -105,7 +109,7 @@ describe('getRaidStats', () => {
 
         const stats = getRaidStats(24, { maxPlayers: 6 });
         expect(stats).toHaveLength(1);
-        expect(stats[0].classDistribution).toEqual({ Warlock: 1 });
+        expect(stats[0].allAttempts.classDistribution).toEqual({ Warlock: 1 });
     });
 
     it('dnfRate is instance-level, not player-level', () => {
@@ -142,5 +146,99 @@ describe('getRaidStats', () => {
     it('returns empty array when no raids match', () => {
         const stats = getRaidStats(24);
         expect(stats).toEqual([]);
+    });
+
+    it('picks quartiles by nearest rank, so every percentile is a real observation', () => {
+        // Four single-player full clears with KDAs 1, 2, 3, 4 (deaths = 1, assists = 0).
+        // Nearest rank: ceil(0.25*4)=1, ceil(0.50*4)=2, ceil(0.75*4)=3.
+        for (const [i, kills] of [1, 2, 3, 4].entries()) {
+            seedRun({ instanceId: String(i + 1), completedBy: [`p${i + 1}`], kills, deaths: 1, assists: 0 });
+        }
+
+        const stats = getRaidStats(24);
+        expect(stats[0].fullClear.sampleSize).toBe(4);
+        expect(stats[0].fullClear.kda).toEqual({ p25: 1, p50: 2, p75: 3 });
+    });
+
+    it('collapses all three quartiles onto the single observation at n=1', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], kills: 40, deaths: 5, assists: 10 });
+
+        const stats = getRaidStats(24);
+        expect(stats[0].fullClear.sampleSize).toBe(1);
+        // (40+10)/5 = 10
+        expect(stats[0].fullClear.kda).toEqual({ p25: 10, p50: 10, p75: 10 });
+    });
+
+    it('at n=2 gives p25 = p50 = lower and p75 = upper, so both raw values are recoverable', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], kills: 10, deaths: 1, assists: 0 });
+        seedRun({ instanceId: '2', completedBy: ['p2'], kills: 20, deaths: 1, assists: 0 });
+
+        const stats = getRaidStats(24);
+        expect(stats[0].fullClear.kda).toEqual({ p25: 10, p50: 10, p75: 20 });
+    });
+
+    it('divides by max(deaths, 1) per Player-Run so a flawless run does not divide by zero', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], kills: 30, deaths: 0, assists: 0 });
+
+        const stats = getRaidStats(24);
+        expect(stats[0].fullClear.kda).toEqual({ p25: 30, p50: 30, p75: 30 });
+        // The aggregate guard is MAX(SUM(deaths), 1), which fires on the same input here.
+        expect(stats[0].fullClear.aggregateKda).toBe(30);
+    });
+
+    it('returns kda null exactly when a scope has no Player-Runs', () => {
+        // A DNF-only instance: the raid is in-window, but nothing qualifies as a full clear.
+        seedRun({ instanceId: '1', incompleteBy: ['p1'], completed: false });
+
+        const stats = getRaidStats(24);
+        expect(stats).toHaveLength(1);
+        expect(stats[0].fullClear.sampleSize).toBe(0);
+        expect(stats[0].fullClear.kda).toBeNull();
+        expect(stats[0].fullClear.aggregateKda).toBeNull();
+        expect(stats[0].fullClear.classDistribution).toEqual({});
+        // The same raid still has Player-Runs under the broader scope.
+        expect(stats[0].allAttempts.sampleSize).toBe(1);
+        expect(stats[0].allAttempts.kda).not.toBeNull();
+    });
+
+    it('reports the two scopes as different populations for the same raid', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1'], kills: 100, deaths: 1, assists: 0 });
+        seedRun({ instanceId: '2', incompleteBy: ['p2'], completed: false, kills: 0, deaths: 10, assists: 0 });
+
+        const stats = getRaidStats(24);
+        const row = stats[0];
+
+        expect(row.fullClear.sampleSize).toBe(1);
+        expect(row.fullClear.kda).toEqual({ p25: 100, p50: 100, p75: 100 });
+        expect(row.fullClear.aggregateKda).toBe(100);
+
+        expect(row.allAttempts.sampleSize).toBe(2);
+        // Sorted KDAs are [0, 100]: nearest rank puts p25 and p50 on the DNF run.
+        expect(row.allAttempts.kda).toEqual({ p25: 0, p50: 0, p75: 100 });
+        // (100+0)/(1+10) = 9.09
+        expect(row.allAttempts.aggregateKda).toBe(9.09);
+    });
+
+    it('counts instances in instanceCount and Player-Runs in sampleSize', () => {
+        // 2 instances, 4 Player-Runs — the two counts are in different units.
+        seedRun({ instanceId: '1', completedBy: ['p1', 'p2', 'p3'] });
+        seedRun({ instanceId: '2', incompleteBy: ['p4'], completed: false });
+
+        const stats = getRaidStats(24);
+        expect(stats[0].instanceCount).toBe(2);
+        expect(stats[0].allAttempts.sampleSize).toBe(4);
+        expect(stats[0].fullClear.sampleSize).toBe(3);
+    });
+
+    it('class counts sum to sampleSize within each scope, since they are one population', () => {
+        seedRun({ instanceId: '1', completedBy: ['p1', 'p2'] });
+        seedRun({ instanceId: '2', completedBy: ['p3'], incompleteBy: ['p4'] });
+        seedRun({ instanceId: '3', incompleteBy: ['p5'], completed: false });
+
+        const stats = getRaidStats(24);
+        for (const scope of [stats[0].fullClear, stats[0].allAttempts]) {
+            const total = Object.values(scope.classDistribution).reduce((a, b) => a + b, 0);
+            expect(total).toBe(scope.sampleSize);
+        }
     });
 });

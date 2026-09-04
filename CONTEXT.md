@@ -69,3 +69,31 @@ _Avoid_: last updated, refresh time
 Repeatedly replaying a single raid encounter or checkpoint for rewards, rather than progressing
 through the raid. The activity the site is named for.
 _Avoid_: grind, rerun
+
+**Player-Run**:
+One player in one raid instance — the datum every population statistic is counted in. Distinct
+from a Completion, which requires the run to be a finished Full Clear: a Player-Run counts whether
+they cleared, joined at a checkpoint, or dropped out. A player who brought two characters to the
+same instance is still one Player-Run, and today only their first-observed character's kills,
+deaths and assists are kept.
+_Avoid_: participant, entry, appearance
+
+**All Attempts**:
+Every raid instance observed in a window, whatever became of it — Full Clears, Checkpoint Runs and
+runs nobody finished. The counterpart to Full Clear, and the broader of the two scopes any
+population statistic can be reported under.
+_Avoid_: all runs, everything, unfiltered
+
+**KDA Quartiles**:
+The spread of KDA across a raid's Player-Runs: the 25th, 50th and 75th percentile of
+`(kills + assists) / max(deaths, 1)`, each one a score some player actually achieved. Answers what
+a typical player does in this raid, and how widely players differ. Every Player-Run counts once,
+however active it was.
+_Avoid_: average KDA, median KDA, KDA
+
+**Aggregate KDA**:
+A raid's or a player's combined kill economy: `(sum of kills + sum of assists) / sum of deaths`
+across every Player-Run in scope. Weighted by activity — the busiest runs move it most — so it
+answers what the population as a whole did, not what any one player is likely to do. Routinely
+disagrees with the KDA Quartiles, and the disagreement is the point.
+_Avoid_: average KDA, total KDA, KDA
