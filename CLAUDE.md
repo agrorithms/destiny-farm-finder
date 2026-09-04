@@ -2,6 +2,13 @@
 
 Real-time Destiny 2 raid completion tracker. SQLite database fed by background crawlers against the Bungie API; Next.js app reads from the DB and serves live leaderboards + active fireteam sessions.
 
+**Two databases, and the distinction qualifies nearly every rule below.** The **Tracker** is the
+live system — `data/raid-tracker.db`, the crawlers, the leaderboards, the active sessions — and is
+what an unqualified rule here means. An **Archive** is a frozen, complete, read-only historical
+dataset served alongside it and never joined to it; the **GoS 10k** (`data/gos-10k.db`,
+`src/lib/db/archive/`) is the first. See `CONTEXT.md` and
+[ADR 0007](docs/adr/0007-the-archive-is-a-second-read-only-database.md).
+
 ## Note
 
 - NEVER overwrite files in ~/.claude/plans/ 
@@ -37,6 +44,8 @@ Port and build-lock hygiene is enforced by hooks in `.claude/hooks/` — a dev s
 `package.json` has the full list. The non-obvious ones:
 
 - `npm run start` — **web app only.** The crawler/scanner/discovery are separate PM2 processes (`ecosystem.config.js`) and must be started independently.
+- `npm run build-gos10k` — rebuilds `data/gos-10k.db` (the Archive serving copy) from the master under `gos10k/`, dropping the raw-PGCR table, and rewrites the committed manifest at `src/lib/db/archive/gos-10k-manifest.json`. Neither database is in git; the script is. Re-run it and re-`scp` after any change to the master, or `getArchiveDb()` will refuse the file.
+- `npm run extract-archive-fixture` — regenerates `tests/fixtures/archive-seed.json` from the same master. Committed output; needs the master present.
 - `npm run setup-manifest` — writes `data/manifest-cache.json` for a human to read. Changes nothing about runtime behaviour; see the raid-detection convention below.
 - `npm run e2e` — Playwright browser tests. Builds, then serves the app on **port 3100** against a throwaway seeded database. Not in `npm test`; runs in CI via its own `e2e.yml` on `pull_request` + `workflow_dispatch`, never on `push`. The script pins a dummy `NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY` into the build — Next inlines `NEXT_PUBLIC_*` at build time, and the client-write specs throw on a missing key before the Bungie stub can fire. `npm run e2e:nobuild` skips the build for fast iteration, is wrong if `.next` is stale, and inherits whatever key the last build baked in.
 - `npm run e2e:maintenance` — slow, spawns real crawler/scanner processes against a mock Bungie server. Deliberately outside `npm test` and CI. Unrelated to `npm run e2e` despite the name.
@@ -48,12 +57,16 @@ Scripts run via `tsx` using `tsconfig.scripts.json`. Next.js app and scripts com
 - **Player identity is `Name#Code`.** Always store and display `bungie_global_display_name` in full. Partial names were a real bug — see recent commits.
 - **Raid detection is a hardcoded table, not a runtime cache lookup.** `RAID_DEFINITIONS` in `src/lib/bungie/manifest.ts` is a literal map of raid key → name/slug/activity hashes, flattened into a hash→key `Map` at import time. Nothing reads `data/manifest-cache.json` at runtime. Adding a new raid means **editing `manifest.ts`** — `npm run setup-manifest` only writes the cache file for a human to read.
 - **Dedicated scanner key pool** (`BUNGIE_SCANNER_API_KEY`, `_2`) — the scanner rotates only within its own keys, and each key gets its own RPS budget. Don't share scanner keys across other processes.
-- **All SQL lives in `src/lib/db/queries.ts`.** API routes call it directly — no ORM, no service layer.
+- **All SQL lives in one query module per database.** The Tracker's is `src/lib/db/queries.ts`; the GoS 10k Archive's is `src/lib/db/archive/queries.ts`. API routes and server components call them directly — no ORM, no service layer. The rule is per-database, not one file overall: `queries.ts` is ~1,700 lines over an implicit `getDb()`, and mixing a second connection into it would make the database ambiguous per function.
+- **The Archive's full-clear rules are named functions, and each one already includes "and the subject finished it."** Dropping that conjunct returns a number ~30% high that still looks plausible. Two of the four things this codebase calls a full clear are the Tracker's (`FULL_CLEAR`, `COMPLETION`); two are the Archive's. See `CONTEXT.md`'s `Full Clear` entry and issue #70.
+- **`gos10k/` is how the Archive's data was *collected*; `scripts/` and `src/` are how it is *served*.** `gos10k/` is finished, keeps its own pinned `vitest.config.ts`, has no npm scripts and is deliberately outside CI. Anything ongoing — the serving-copy build, the fixture extract — belongs in `scripts/` where `tsconfig.scripts.json` and CI cover it.
 - **API cache headers are only half the story** — Cloudflare cache rules (not in this repo) rewrite them, and a rule with no Browser TTL falls back to a 4h zone default. Check `cf-cache-status` and the header prod actually returns before touching `src/lib/http/cache.ts`. See `docs/decisions.md`.
 
 ## Env vars
 
 Core: `BUNGIE_API_KEY`, `BUNGIE_SCANNER_API_KEY`, `BUNGIE_SCANNER_API_KEY_2`, `BUNGIE_SCANNER_API_KEY_3`, `BUNGIE_SCANNER_API_KEY_4`, `BUNGIE_DISCOVERY_API_KEY`, `ADMIN_STATS_USERNAME` / `ADMIN_STATS_PASSWORD`, `SEED_PLAYERS`.
+
+Archive: `GOS10K_ARCHIVE_DB_PATH` (default `data/gos-10k.db`) — the serving copy, opened `readonly` + `fileMustExist`. A missing or mismatched file 500s `/gos10k` on first access and nothing else; that is deliberate (ADR 0007).
 
 Web: `NEXT_PUBLIC_SITE_URL` (default `https://destinyfarmfinder.qzz.io`) — sets `metadataBase` for social-share unfurls **and** the same-origin allowlist for the client-write guard. `NEXT_PUBLIC_BUNGIE_PUBLIC_API_KEY` — public key used by browser-side Bungie calls (profile + LinkedProfiles resolution). `PAGE_TOKEN_SECRET` (optional, server-only) — when set, enables the short-lived HMAC page-token check on the client-write endpoints (`active-session-update`, `players/identity`, `queue-crawl`); when unset, those endpoints still enforce the same-origin check but skip the token layer. See `src/lib/http/request-auth.ts`.
 
@@ -77,6 +90,11 @@ The active-session poll loop shares an event loop and a singleton Bungie client 
 ## Backups
 
 There is **no continuous replication.** Backups are manual snapshots: `npx tsx scripts/backup-db.ts` checkpoints the WAL and `VACUUM INTO`s a dated copy alongside the live DB (`data/raid-tracker.backup-YYYY-MM-DD.db`). It needs ~1 DB size of free disk. Restoring is a file move: stop the processes, swap the snapshot into `data/raid-tracker.db` (remove stale `-wal`/`-shm` files), restart. Crawled data is re-crawlable, which is why this is tolerable.
+
+**That reasoning does not transfer to an Archive.** Re-deriving the GoS 10k master means re-crawling
+13,420 PGCRs from Bungie, and its history is not guaranteed to stay fetchable. Both the master
+(`gos10k/destiny_pgcrs.db`) and the serving copy are copied to the Oracle box by hand — runbook in
+`docs/decisions.md`.
 
 ## Testing
 
