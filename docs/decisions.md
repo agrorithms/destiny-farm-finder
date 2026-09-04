@@ -151,9 +151,9 @@ not `:memory:`) and ADR 0004 (mock only at the network boundary).
 Recorded here are the findings that changed the shape of the work, and the defects found along the
 way that were **not** fixed.
 
-### `ProcessedPGCR.isFullClear` is dead code, and would be wrong if used
+### `ProcessedPGCR.isFullClear` was dead code, and would have been wrong if used
 
-`src/lib/crawler/pgcr.ts:36` derives `isFullClear` from a three-way `||`. Nothing reads it.
+`src/lib/crawler/pgcr.ts` derived `isFullClear` from a three-way `||`. Nothing read it.
 `fetchAndStorePGCR` persists Bungie's raw `activityWasStartedFromBeginning`, and every leaderboard
 filters on that column (`leaderboard-cache.ts:175`, `queries.ts:760/781/820/855`).
 
@@ -164,9 +164,11 @@ unconditionally and `isFullClear` is `true` for 100% of runs. Of those, 568,648 
 `activity_was_started_from_beginning = 0`, i.e. they are checkpoint runs. Wiring this field into
 the writer would inflate every full-clear leaderboard by roughly 2.2×.
 
-**Action:** delete the field in a future change. Deliberately left untested — pinning dead
-behaviour would only make removal harder. The reasoning is duplicated in
-`src/lib/crawler/pgcr.test.ts` so whoever finds it there does not have to come looking here.
+**Action taken:** the field was deleted as part of issue #70 (consolidating the full-clear
+predicates). It was deliberately left untested — pinning dead behaviour would only have made
+removal harder. This section stays because the 2.2× finding is why the guarding tests in
+`tests/db/full-clear-flag.test.ts` exist: they pin the *writer* against ever adopting a derivation
+like it. The reasoning is echoed in `src/lib/crawler/pgcr.test.ts`.
 
 ### `formatDisplayName` drops the `#Code` when the code is zero
 

@@ -5,17 +5,18 @@ import { readPgcrRow, seedRun } from '../helpers/seed';
 /**
  * What actually decides whether a run counts as a full clear.
  *
- * There are two candidate signals in the codebase and only one of them is real:
+ * There used to be two candidate signals in the codebase, only one of them real:
  *
  *   ProcessedPGCR.isFullClear         computed, never persisted, always true
  *   pgcrs.activity_was_started_from_beginning   persisted, and what every
  *                                               leaderboard filters on
  *
- * The first is dead code. Bungie reports `startingPhaseIndex: 0` on every PGCR,
- * including confirmed checkpoint runs (see tests/real-pgcrs.test.ts), so
- * `isFullClear`'s `=== 0` branch fires unconditionally and reports every run as
- * a full clear — including the 568k that are checkpoint runs. Nothing reads it, so nothing breaks today;
- * wiring it up would inflate every leaderboard by roughly 2.2x.
+ * The first was dead code and has been deleted. Bungie reports
+ * `startingPhaseIndex: 0` on every PGCR, including confirmed checkpoint runs
+ * (see tests/real-pgcrs.test.ts), so `isFullClear`'s `=== 0` branch fired
+ * unconditionally and reported every run as a full clear — including the 568k
+ * that are checkpoint runs. Nothing read it, so nothing broke; wiring it up
+ * would have inflated every leaderboard by roughly 2.2x.
  *
  * These tests pin the signal that ships, so that if anyone ever "tidies" the
  * writer by using the derived field instead, the failure is loud.
@@ -34,9 +35,9 @@ describe('the persisted full-clear flag', () => {
     });
 
     it('records a checkpoint run as not a full clear', () => {
-        // The case ProcessedPGCR.isFullClear gets wrong. If the writer ever
-        // switched to that field, this would flip to 1 and the run would start
-        // appearing on full-clear leaderboards.
+        // The case the deleted ProcessedPGCR.isFullClear got wrong. If the
+        // writer ever adopts a derivation like it, this flips to 1 and the run
+        // starts appearing on full-clear leaderboards.
         seedRun({ instanceId: '1', completedBy: ['p1'], startedFromBeginning: false });
 
         expect(readPgcrRow('1')?.activity_was_started_from_beginning).toBe(0);
