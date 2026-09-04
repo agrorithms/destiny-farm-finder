@@ -56,8 +56,20 @@ and a re-read enriches it. That is the same argument this ADR makes about
   forbid one. `getDb()` refuses to open anything but the throwaway database when
   `VITEST` is set (ADR 0003) — it substitutes no behaviour, so it cannot make a
   failing test appear to pass; its only effect is aborting a run that is already
-  misconfigured. It is the sole place `src/` knows tests exist, and it is
-  deliberate rather than a leak to be tidied away.
+  misconfigured. It is deliberate rather than a leak to be tidied away.
+- **Amendment (2026-09-04): there is now a second place `src/` knows tests exist,
+  and it is weaker than the first.** `getArchiveDb()` skips its manifest row-count
+  check when `isThrowawayDbConfigured('DFF_TEST_GOS10K_DB_SENTINEL')` — that *does*
+  substitute behaviour under a runner, which the paragraph above does not license.
+  It is accepted because the fixture Archive is a 9-run sample of a 13,420-run file
+  and cannot satisfy production counts by construction, and because the skip is
+  bounded by the guard that has already proved the path is throwaway: it cannot
+  silence the check for a real file. The exposure is that a bug *in the check* would
+  not be caught by the suite, so `verifyArchiveRowCounts()` is exported and tested
+  directly against real files instead (`tests/db/archive-connection.test.ts`). The
+  env sniff lives in one function, `isThrowawayDbConfigured()`, rather than being
+  repeated per connection module. If a third such skip is ever wanted, that is the
+  signal this carve-out has stopped being an exception.
 - Tests that need a specific Bungie response stub `fetch` explicitly. The guard
   records itself as the original, so the block is restored automatically for the
   next test with no per-file cleanup.

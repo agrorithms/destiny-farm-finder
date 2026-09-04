@@ -84,6 +84,35 @@ technique. It is idempotent because `playwright.config.ts` is re-loaded in every
 worker process, and a second mint would create a directory nothing else knows
 about.
 
+## Amendment (2026-09-04): the guard covers every database this app opens
+
+The arrival of the Archive (`data/gos-10k.db`, ADR 0007) made the wording above read as if it were
+about *the* database. It never was — it is about not letting a test process touch anything that
+isn't throwaway — so `assertDbPathAllowed()` was generalised to take
+`(dbPath, sentinelEnvVar, label)` and both connections call it. `tests/setup/test-db-path.ts` mints
+`DFF_TEST_GOS10K_DB_SENTINEL` alongside `DFF_TEST_DB_SENTINEL`, in the same directory.
+
+The alternative was to document that the guard covers the Tracker only, and that `readonly: true`
+on the Archive makes the gap acceptable. That is true today and it is still the wrong shape: a hole
+maintained by a comment, which survives exactly as long as the next person reads the comment.
+Generalising cost about twenty lines and leaves none.
+
+`readonly` is not the belt-and-braces it looks like, either. It stops a test *writing* the real
+Archive; it does nothing about a test asserting against 13,420 production rows and passing for the
+wrong reason.
+
+**The fixture Archive is a real built file, like every other test database here.** It is not a
+committed binary: `tests/fixtures/archive-seed.json` is extracted from the master by
+`scripts/extract-archive-fixture.ts` and loaded into a fresh SQLite file at test-setup time. That
+keeps it consistent with the nine existing JSON fixtures — reviewable in a diff — while still
+testing real SQL against a real file. The rows are sampled from genuine data, including the
+hazards: a run with `is_full_clear = 1` that the subject did not complete, a duplicate-character
+run, a NULL name code, and runs either side of the 2022-02-21 pin. A hand-written seed would encode
+our beliefs; the hazards are the whole reason the fixture exists.
+
+The loader lives in `tests/helpers/`, so per `CLAUDE.md` it imports nothing from `vitest` and uses
+relative imports only — Playwright's loader does not apply tsconfig `paths` to `globalSetup`.
+
 ## Consequences
 
 - Test databases cost a `mkdtemp` plus `initializeSchema()` per test file —
@@ -98,6 +127,9 @@ about.
   pins the invariant, including that `VITEST` is actually set — an inert guard is
   the only failure mode here that hides, since one that wrongly refuses breaks
   every test file at once.
+- Both sentinels are minted by the same setup file and point into the same `mkdtemp` directory, so
+  there is one thing to break rather than two. A connection added later without a sentinel of its
+  own is the failure this amendment does not prevent; adding one is three lines.
 - `openMaintenanceDb()` is deliberately *not* guarded: nothing in the suite reaches
   it today. Its callers (`src/lib/bungie/maintenance.ts`) `VACUUM` through it, so a
   test that exercises them should add the check.

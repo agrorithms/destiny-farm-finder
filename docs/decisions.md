@@ -429,3 +429,85 @@ prompts.
 
 Requirements and accepted limitations: `docs/specs/260730-claude-hooks-spec.md`.
 Behavioural suite: `bash .claude/hooks/test-hooks.sh` (87 assertions).
+
+---
+
+## 2026-09-04 — Shipping the GoS 10k Archive: cache headers and the copy runbook
+
+Two halves of the Archive (ADR 0007) live partly outside this repo: the Cloudflare rule that
+decides what a browser actually caches for `/gos10k`, and the manual copy that puts the database
+on the box. Neither can be enforced by a code comment, so both are here.
+
+### Cache headers: the one page where a stale response is correct
+
+Every other route on this site fights staleness. `/gos10k` is the opposite — it serves a frozen,
+complete dataset whose last row was written on 2026-08-09 and will never gain another. There is no
+such thing as stale data here, so the route sets a long `max-age` plus `immutable` via
+`archiveCacheControl()` in `src/lib/http/cache.ts`, rather than the
+`max-age=0, s-maxage=N, stale-while-revalidate=M` shape the live API routes use.
+
+**The origin header is not the answer, and reading this file's 2026-07-26 entry is not optional.**
+Cloudflare cache rules — which are not in this repo — rewrite what reaches the browser, and a rule
+whose Browser TTL is left *unset* does not pass the origin value through: it falls back to the
+zone-level default of **4 hours**. That is how `/api/live-stats` ended up serving `max-age=14400`
+while the repo had never emitted a non-zero `max-age` anywhere.
+
+For `/gos10k` a 4h browser TTL would be harmless — it is less than what the origin asks for. The
+failure that matters here is the opposite one: a rule that *shortens* it, or a Bypass rule matching
+`/gos10k` because it looked dynamic.
+
+**Required verification, on prod, after the first deploy** — not from the code, from the wire:
+
+```bash
+curl -sSI https://destinyfarmfinder.qzz.io/gos10k | grep -iE 'cache-control|cf-cache-status|age'
+```
+
+Expected: the `max-age` and `immutable` the route sets, and `cf-cache-status: HIT` on the second
+request. `DYNAMIC` means no cache rule matches the path — a miss, not an error, but the page is
+then uncached at the edge and every hit reads SQLite on the box. `BYPASS` means a rule is actively
+excluding it. **Record the observed values here when the check is run; until then this section
+describes intent, not confirmed behaviour.**
+
+**Observed locally, 2026-09-04** (`next start` on port 3123, no Cloudflare in front):
+
+```
+cache-control: public, max-age=86400, s-maxage=86400, immutable
+```
+
+That settles the half of the question that does not need prod: Next does *not* overwrite the
+middleware header with the `private, no-cache, no-store` it emits for dynamic routes, which was the
+plausible silent failure. What the edge does with it is still unverified, and the `curl` above is
+still required.
+
+### Copy runbook: two files, by hand, no CI check
+
+Nothing in CI or `npm run build` touches either database, deliberately (ADR 0007). Both copies are
+manual and both matter for different reasons.
+
+```bash
+# 1. Rebuild the serving copy and its committed manifest from the master.
+npm run build-gos10k
+
+# 2. The serving copy — what the app reads. ~71 MB.
+scp data/gos-10k.db oracle:~/destiny-farm-finder/data/gos-10k.db
+
+# 3. The master — the off-machine backup. ~119 MB. NOT read by the app.
+scp gos10k/destiny_pgcrs.db oracle:~/gos10k-master/destiny_pgcrs.db
+
+# 4. Restart the web processes so the new file is opened and re-verified.
+pm2 restart web
+```
+
+Step 3 is the part that is easy to skip and expensive to have skipped. `CLAUDE.md` tolerates having
+no continuous replication because crawled Tracker data is re-crawlable; the master is not, in any
+cheap sense — re-deriving it means re-crawling 13,420 PGCRs, and Bungie's activity history is not
+guaranteed to stay fetchable indefinitely. Until step 3 runs, the master exists on exactly one
+laptop.
+
+Cloud object storage (R2) is better in principle and was rejected for now: it adds credentials and
+a process for a file that will never change again.
+
+**Step 1 is not optional if the master changed.** `getArchiveDb()` verifies the serving copy's row
+counts against the committed manifest on first open and throws if they disagree. That check is what
+stands in for the build-time failure the dynamic rendering choice gave up — a truncated or stale
+`scp` is a loud 500 on `/gos10k`, not a plausible wrong number.

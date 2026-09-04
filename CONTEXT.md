@@ -6,6 +6,19 @@ the web app only reads.
 
 ## Language
 
+**Tracker**:
+The live system: `data/raid-tracker.db`, the crawlers that fill it, and the leaderboards and
+active sessions read off it. Always changing. Every unqualified term below is a Tracker term.
+_Avoid_: the database, the app, production data
+
+**Archive**:
+A frozen, complete, read-only historical dataset served alongside the Tracker but never joined to
+it. Complete means the crawl that produced it finished and will not run again; frozen means the
+file is an artifact, built once and copied into place, never written by the app. The **GoS 10k**
+(`data/gos-10k.db`) is the first and today the only one. An Archive has its own connection, its
+own query module and its own senses of the terms below — where they differ, the entry says so.
+_Avoid_: snapshot, historical database, the second DB
+
 **Fireteam**:
 A group of players playing a Destiny activity together. The unit users care about — every card on
 the active-sessions page is one fireteam.
@@ -40,6 +53,24 @@ derived one that looked like it was had been wrong ever since Bungie stopped pub
 it read. The second means **at least one** player finished, not all of them, so a Full Clear can
 contain players who did not finish it themselves. That is what separates it from a Completion,
 which is about one particular player.
+
+**In the Archive the first half cannot be established the same way**, because Bungie did not
+populate its start-of-activity report for the whole of the history the GoS 10k covers. Zero runs
+at or before **2022-02-21** carry the flag, so the Archive names two Full Clear rules and reports
+which one it used:
+
+- **Pinned Full Clear** — the flag after 2022-02-21, `starting_phase_index = 0` at or before it.
+  Reconciles to exactly **10,000**, which is why it is the Archive's default. The pin instant is
+  instance `10141395454`, the subject's *own last clear before a 40-day gap with no GoS runs* — it
+  is where the evidence runs out, not a boundary Bungie chose, and the id means nothing else.
+- **Disjunctive Full Clear** — flag set **or** phase index 0, anywhere in the history. **10,020.**
+  Comparable to the Tracker, generous by 20 runs before the flag was reliable.
+
+Both carry the second half — that the subject himself finished — inside the named rule rather than
+leaving it to the caller. Dropping it returns 10,040 / 13,412: plausible-looking numbers that are
+wrong. The pinned rule reads a stored column that already folds in "someone finished it", so its
+gap is only 40 runs — the fireteam cleared them from the start without him. A 40-run error is
+harder to notice than a 3,400-run one, not less wrong. See `src/lib/db/archive/queries.ts`.
 _Avoid_: complete run, fresh run
 
 **Checkpoint Run**:
@@ -72,6 +103,21 @@ _Avoid_: last updated, refresh time
 Repeatedly replaying a single raid encounter or checkpoint for rewards, rather than progressing
 through the raid. The activity the site is named for.
 _Avoid_: grind, rerun
+
+**Run**:
+In the Archive, one raid instance the subject entered — **not necessarily one he finished**. The
+`completed` column says whether he did; `source` says which crawl found it
+(`get_activity_history` was completions-only, `get_activity_history_unfiltered` added the 3,397 he
+started and abandoned). A count of Runs is a count of attempts, and any question about *clears*
+must say so with one of the Full Clear rules above.
+_Avoid_: clear, raid, activity
+
+**Helper**:
+Anyone other than the Archive's subject who appears in one of his Runs, identified by `Name#Code`
+like any other player. Named for what the dataset is about — the people who got him to 10,000 —
+and deliberately not "teammate": a Helper is a fact about one player's history, not a symmetric
+relationship, and someone who joined a checkpoint run he abandoned is still a Helper.
+_Avoid_: teammate, fireteam member, participant
 
 **Player-Run**:
 One player in one raid instance — the datum every population statistic is counted in. Distinct

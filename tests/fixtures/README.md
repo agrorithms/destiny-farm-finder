@@ -37,6 +37,16 @@ starts failing, pick a replacement instance and update `scripts/capture-pgcr-fix
 Every instance ID was chosen by querying the production database for runs exhibiting the property
 in question, so each is a real observed run rather than a hypothetical.
 
+## Not a PGCR: `archive-seed.json`
+
+`archive-seed.json` is the GoS 10k Archive fixture, and everything above about PGCRs applies to it
+in spirit rather than in mechanism. It is 9 real runs (60 player rows, 263 weapon rows) extracted
+from the Archive master by `npm run extract-archive-fixture`, together with the master's own DDL
+read from `sqlite_master` so the fixture schema cannot drift from the real one. Each run carries a
+`why` naming the hazard it exists for — the pin instant, a `is_full_clear = 1` run the subject did
+not finish, a duplicate-character run, a NULL name code. `tests/helpers/archive-seed.ts` builds a
+real SQLite file from it; see ADR 0003's 2026-09-04 amendment and `../README.md`.
+
 ## The fixtures
 
 | File | Instance | What makes it interesting |
