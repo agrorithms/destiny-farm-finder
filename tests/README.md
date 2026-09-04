@@ -58,7 +58,7 @@ not being ported or absorbed into Vitest. It was only renamed, from `test-mainte
 ```
 tests/
 ├── db/                  tests that need a database
-├── fixtures/            captured Bungie PGCR JSON + README
+├── fixtures/            captured Bungie PGCR JSON, the Archive seed, + README
 ├── helpers/             builders, seeding, db access — SHARED with e2e/
 └── setup/               global setup: db path, network guard
 src/**/*.test.ts         pure-logic tests, next to what they cover
@@ -146,6 +146,10 @@ that some test imports. `getDb()` refuses to open anything but the throwaway DB 
 set, so a break fails loudly with `Refusing to open …` rather than silently destroying data.
 `openMaintenanceDb()` is deliberately left unguarded — see ADR 0003 for why.
 
+The same applies per-database: `assertDbPathAllowed()` takes a path and a sentinel, and the Archive
+passes its own (`DFF_TEST_GOS10K_DB_SENTINEL`, minted in the same temp directory). A connection
+added later without one would read the real file while every existing assertion still passed.
+
 So if you ever see `Refusing to open … under Vitest`, that setup file didn't run before something
 imported `src/lib/db` — check the `setupFiles` order rather than working around the error.
 
@@ -154,6 +158,38 @@ use — so seeded rows are rows production could actually create. Don't reach fo
 
 **Fixtures or builders?** Fixtures when the point is "this is what Bungie really sends". Builders
 when you need to vary one field across cases. See [fixtures/README.md](./fixtures/README.md).
+
+**Anything touching the Archive** — build it, don't seed it:
+
+```ts
+// tests/db/archive-whatever.test.ts
+import { buildFixtureArchive } from '../helpers/archive-seed';
+import { closeArchiveDb } from '@/lib/db/archive';
+
+beforeAll(() => { closeArchiveDb(); buildFixtureArchive(); });
+```
+
+The Archive (`src/lib/db/archive/`, [ADR 0007](../docs/adr/0007-the-archive-is-a-second-read-only-database.md))
+is a frozen read-only artifact in production — a file copied into place, never written by the app
+— so there is nothing to seed at runtime the way `seedRun` seeds the Tracker. `buildFixtureArchive()`
+instead **writes a whole database** from `fixtures/archive-seed.json` into the second throwaway path
+`test-db-path.ts` mints, and `getArchiveDb()` then opens it read-only exactly as production does.
+
+Two things follow from the connection being a per-process singleton and the file being built rather
+than emptied: build it in `beforeAll` rather than `beforeEach` (there is nothing to reset — no test
+can write to it), and `closeArchiveDb()` first, because rebuilding the file under an open handle
+leaves the old snapshot in memory.
+
+The seed is generated, not hand-written: `npm run extract-archive-fixture` pulls nine real runs and
+their player and weapon rows out of the master, along with the master's own DDL, so the fixture
+schema cannot drift. The nine are chosen for their hazards rather than for being typical — the run
+whose flag says full clear but that the subject did not finish, the player who brought two
+characters, the NULL name code, one run either side of the 2022-02-21 pin. Each carries its reason
+in the file's `targets`. Regenerating needs the master, which lives only where the crawl was run.
+
+`getArchiveDb()` skips its production row-count check for this file, because a nine-run sample
+cannot satisfy a 13,420-row manifest. That check is tested directly in
+`tests/db/archive-connection.test.ts` instead.
 
 ## Writing them
 

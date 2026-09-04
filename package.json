@@ -16,6 +16,8 @@
     "discover": "npx tsx scripts/discover.ts",
     "crawler": "npx tsx scripts/start-crawler.ts",
     "setup-manifest": "npx tsx scripts/setup-manifest.ts",
+    "build-gos10k": "npx tsx scripts/build-gos10k-serving-db.ts",
+    "extract-archive-fixture": "npx tsx scripts/extract-archive-fixture.ts",
     "db-stats": "npx tsx scripts/db-stats.ts",
     "debug-players": "npx tsx scripts/cleanup/debug-players.ts",
     "debug-sessions": "npx tsx scripts/cleanup/debug-sessions.ts",
