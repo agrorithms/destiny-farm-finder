@@ -43,10 +43,7 @@ describe('who appears on the leaderboard', () => {
 
     it('excludes a checkpoint run', () => {
         // The live full-clear signal: Bungie's raw
-        // activityWasStartedFromBeginning. A derived alternative once existed
-        // (ProcessedPGCR.isFullClear) that reported every run as a full clear;
-        // it was never persisted and has been deleted.
-        // See docs/decisions.md.
+        // activityWasStartedFromBeginning. See docs/decisions.md.
         seedRun({ instanceId: '1', completedBy: ['p1'], startedFromBeginning: false });
 
         expect(runLeaderboardRows(HOURS_BACK, [], 10)).toEqual([]);

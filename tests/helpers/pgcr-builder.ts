@@ -107,12 +107,6 @@ export interface PGCROptions {
     /** ISO 8601. Bungie reports UTC. */
     period?: string;
     activityWasStartedFromBeginning?: boolean;
-    /**
-     * Bungie reports this as 0 on every real PGCR, including checkpoint runs, so it
-     * no longer distinguishes anything. Pass `null` to omit it entirely; pass a
-     * number only when testing the legacy path.
-     */
-    startingPhaseIndex?: number | null;
     /** Raw Bungie difficulty tier. Pass `null` to omit entirely (pre-migration rows). */
     activityDifficultyTier?: number | null;
     entries?: DestinyPostGameCarnageReportEntry[];
@@ -125,7 +119,6 @@ export function buildPGCR(options: PGCROptions = {}): DestinyPostGameCarnageRepo
         referenceId = activityHash,
         period = '2026-07-26T12:00:00Z',
         activityWasStartedFromBeginning = true,
-        startingPhaseIndex = null,
         activityDifficultyTier = null,
         entries = buildFireteam(),
     } = options;
@@ -142,10 +135,6 @@ export function buildPGCR(options: PGCROptions = {}): DestinyPostGameCarnageRepo
         },
         entries,
     } as DestinyPostGameCarnageReportData;
-
-    if (startingPhaseIndex !== null) {
-        pgcr.startingPhaseIndex = startingPhaseIndex;
-    }
 
     if (activityDifficultyTier !== null) {
         pgcr.activityDifficultyTier = activityDifficultyTier;

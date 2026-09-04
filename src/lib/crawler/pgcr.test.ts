@@ -12,12 +12,9 @@ import {
  * `processPGCR` is pure — JSON in, object out — so it needs no setup and is the
  * right first target. It is the funnel every ingested raid passes through.
  *
- * There used to be a third full-clear signal here, `ProcessedPGCR.isFullClear`,
- * deliberately left uncovered because it was dead and its derivation was wrong.
- * It has since been deleted. `fetchAndStorePGCR` persists Bungie's raw
- * `activityWasStartedFromBeginning`, and that is the signal that decides
- * leaderboard membership — covered in tests/db/full-clear-flag.test.ts.
- * See docs/decisions.md.
+ * The signal that decides leaderboard membership is not derived here:
+ * `fetchAndStorePGCR` persists Bungie's raw `activityWasStartedFromBeginning`.
+ * It is covered in tests/db/full-clear-flag.test.ts.
  */
 
 describe('run completion', () => {

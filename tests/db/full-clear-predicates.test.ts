@@ -12,24 +12,18 @@ import {
 import { runLeaderboardRows } from '../../src/lib/cache/leaderboard-cache';
 
 /**
- * Two predicates share the words "full clear" and are NOT the same population.
+ * The FULL_CLEAR / COMPLETION pair from queries.ts, pinned across every query
+ * that uses either. What they mean is defined once in CONTEXT.md (`Full Clear`,
+ * `Completion`) and in the constants' own docblocks; this file only proves the
+ * two populations stay apart. On the live database the gap is ~16% of
+ * Player-Runs.
  *
- *   Full Clear (instance) p.completed = 1 AND p.activity_was_started_from_beginning = 1
- *   Completion  (player)  pp.completed = 1 AND <Full Clear>
- *
- * `pgcrs.completed` is written as "at least one player finished", not "all of
- * them" (see processPGCR), so a player can sit inside a Full Clear without
- * having a Completion of their own. On the live database that gap is ~16% of
- * Player-Runs. Every raid-stats scope counts that player; every player-facing
- * and leaderboard query must not.
- *
- * This file pins the pair. Nothing else does: raid-stats.test.ts asserts the
- * two *scopes* differ and player-stats.test.ts covers a per-player DNF, but no
- * other test seeds the one row the distinction turns on — present in an
- * instance the team cleared from the start, personally unfinished. Without it,
- * collapsing the two predicates onto one constant passes the whole suite while
- * silently moving the published full-clear KDA quartiles and class
- * distribution (ADR 0006).
+ * Other tests seed the row the distinction turns on — present in an instance the
+ * team cleared from the start, personally unfinished (leaderboard.test.ts,
+ * raid-stats.test.ts) — but each checks one query. Nothing before this file
+ * asserted the pair holds *together*, so collapsing the two constants onto one
+ * could pass those tests while silently moving the published full-clear KDA
+ * quartiles and class distribution (ADR 0006).
  */
 
 beforeEach(() => { resetTestDb(); });
@@ -39,19 +33,9 @@ const FINISHER = 'finisher';
 /** In the fireteam, present for the clear, did not personally finish. */
 const BYSTANDER = 'bystander';
 
-/** One instance the fireteam cleared from the start, with one member who did not finish. */
-function seedClearWithABystander(alsoFinished: string[] = []): void {
-    seedRun({
-        instanceId: '1',
-        completedBy: [FINISHER, ...alsoFinished],
-        incompleteBy: [BYSTANDER],
-        startedFromBeginning: true,
-    });
-}
-
 describe('a player inside a full clear who did not personally finish', () => {
     it('is counted by the instance-level Full Clear predicate', () => {
-        seedClearWithABystander();
+        seedRun({ instanceId: '1', completedBy: [FINISHER], incompleteBy: [BYSTANDER] });
 
         const row = getRaidStats(HOURS)[0];
 
@@ -63,7 +47,7 @@ describe('a player inside a full clear who did not personally finish', () => {
     });
 
     it('is absent from the player-page completion queries', () => {
-        seedClearWithABystander();
+        seedRun({ instanceId: '1', completedBy: [FINISHER], incompleteBy: [BYSTANDER] });
 
         expect(getPlayerRaidCompletionSummary(BYSTANDER, HOURS)).toEqual([]);
         expect(getPlayerRecentCompletions(BYSTANDER, HOURS)).toEqual([]);
@@ -76,7 +60,7 @@ describe('a player inside a full clear who did not personally finish', () => {
     });
 
     it('is absent from the leaderboard', () => {
-        seedClearWithABystander();
+        seedRun({ instanceId: '1', completedBy: [FINISHER], incompleteBy: [BYSTANDER] });
 
         const rows = runLeaderboardRows(HOURS, [], 10);
 
@@ -85,7 +69,7 @@ describe('a player inside a full clear who did not personally finish', () => {
     });
 
     it('does not stop the finisher from counting everywhere', () => {
-        seedClearWithABystander(['mate2']);
+        seedRun({ instanceId: '1', completedBy: [FINISHER, 'mate2'], incompleteBy: [BYSTANDER] });
 
         // The other side of the pair: the same instance is a Completion for the
         // player who did finish, so a fix that over-tightens is caught too.

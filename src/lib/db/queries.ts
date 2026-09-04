@@ -2,23 +2,27 @@ import { getDb } from './index';
 import type { PlayerInfo } from '../bungie/types';
 
 /**
- * The two predicates that decide what counts as a cleared raid. They are NOT the same
- * population and must not be collapsed onto one another — see CONTEXT.md's `Full Clear` and
- * `Completion` entries, tests/db/full-clear-predicates.test.ts, and ADR 0006.
+ * Instance-level: the run reached the end, having been started from the beginning.
+ * The glossary entry is CONTEXT.md's `Full Clear`; this is its SQL.
  *
- * Both assume `pgcrs` is aliased `p` and `pgcr_players` is aliased `pp`, which is why every
- * query below uses those aliases. `raid_key IS NOT NULL` is deliberately NOT bundled in:
- * "is this a raid at all" is a different question, and bundling it would make these unusable
- * in a non-raid context. Call sites carry it themselves.
+ * Raw fragment, not a whole clause: it assumes `pgcrs` is aliased `p` (and its sibling
+ * {@link COMPLETION} that `pgcr_players` is aliased `pp`), which is why every query here
+ * uses those aliases. `raid_key IS NOT NULL` is deliberately NOT bundled in — "is this a
+ * raid at all" is a different question, and bundling it would make these unusable in a
+ * non-raid context. Call sites carry it themselves.
  */
-
-/** Instance-level: the run reached the end, having been started from the beginning. */
 export const FULL_CLEAR = 'p.completed = 1 AND p.activity_was_started_from_beginning = 1';
 
 /**
  * Player-level: this player finished, inside a Full Clear. The extra conjunct is not
  * redundant — `pgcrs.completed` is written as "at least one player finished" (processPGCR),
  * so being present for a clear is not the same as having cleared it.
+ *
+ * This is a different population from {@link FULL_CLEAR} and the two must not be collapsed
+ * onto one another: the instance-level scopes of `getRaidStats` count the present-but-
+ * unfinished player, every player-facing and leaderboard query must not. See CONTEXT.md's
+ * `Full Clear` and `Completion` entries, tests/db/full-clear-predicates.test.ts, and
+ * ADR 0006's Consequences.
  */
 export const COMPLETION = `pp.completed = 1 AND ${FULL_CLEAR}`;
 
@@ -794,6 +798,9 @@ export function getPlayerRaidCompletionSummary(
   `).all(membershipId, cutoffTimestamp) as PlayerRaidCompletionSummary[];
 }
 
+/** How long a Completion took, NULL for every other row — the shape both aggregates below need. */
+const CLEARED_DURATION = `CASE WHEN ${COMPLETION} THEN p.ended_at - p.period END`;
+
 export function getPlayerRaidPerformanceStats(
     membershipId: string,
     hoursBack: number
@@ -807,12 +814,8 @@ export function getPlayerRaidPerformanceStats(
       COUNT(DISTINCT CASE
         WHEN ${COMPLETION}
         THEN pp.instance_id END) as completions,
-      CAST(ROUND(AVG(CASE
-        WHEN ${COMPLETION}
-        THEN p.ended_at - p.period END)) AS INTEGER) as avgCompletionSeconds,
-      MIN(CASE
-        WHEN ${COMPLETION}
-        THEN p.ended_at - p.period END) as fastestClearSeconds,
+      CAST(ROUND(AVG(${CLEARED_DURATION})) AS INTEGER) as avgCompletionSeconds,
+      MIN(${CLEARED_DURATION}) as fastestClearSeconds,
       ROUND(CAST(SUM(CASE WHEN pp.completed = 0 THEN 1 ELSE 0 END) AS REAL)
         / COUNT(*), 4) as dnfRate,
       SUM(pp.kills) as kills,

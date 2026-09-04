@@ -131,8 +131,7 @@ function formatDisplayName(entry: LeaderboardDbRow): string {
 /**
  * Runs the leaderboard aggregation. Empty `raidKeys` = all raids (no filter);
  * a single key yields the same ranking as the per-raid individual query.
- * `fullClearsOnly` is always applied (forced true on every cached + bypass path); the
- * predicate itself is `COMPLETION`, defined once in queries.ts.
+ * `fullClearsOnly` is always applied (forced true on every cached + bypass path).
  */
 export function runLeaderboardRows(hours: number, raidKeys: string[], limit: number, filters?: RaidFilters): LeaderboardResponseEntry[] {
     const db = getDb();

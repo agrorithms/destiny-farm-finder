@@ -158,10 +158,11 @@ way that were **not** fixed.
 filters on that column — since issue #70, through the `FULL_CLEAR` and `COMPLETION` constants in
 `queries.ts` rather than a dozen inline copies.
 
-It is also incorrect. Bungie now reports `startingPhaseIndex: 0` on every PGCR — verified against
-live API captures, including confirmed checkpoint runs where `activityWasStartedFromBeginning` is
-`false`. The field is present but inert. So the `startingPhaseIndex === 0` branch fires
-unconditionally and `isFullClear` is `true` for 100% of runs. Of those, 568,648 have
+It was also incorrect, for the reason recorded below under `startingPhaseIndex` is sent, and is
+always `0`: Bungie reports it as `0` on every PGCR — verified against live API captures,
+including confirmed checkpoint runs where `activityWasStartedFromBeginning` is
+`false`. The field is present but inert, so the `startingPhaseIndex === 0` branch fired
+unconditionally and `isFullClear` was `true` for 100% of runs. Of those, 568,648 have
 `activity_was_started_from_beginning = 0`, i.e. they are checkpoint runs. Wiring this field into
 the writer would inflate every full-clear leaderboard by roughly 2.2×.
 
@@ -169,7 +170,7 @@ the writer would inflate every full-clear leaderboard by roughly 2.2×.
 predicates). It was deliberately left untested — pinning dead behaviour would only have made
 removal harder. This section stays because the 2.2× finding is why the guarding tests in
 `tests/db/full-clear-flag.test.ts` exist: they pin the *writer* against ever adopting a derivation
-like it. The reasoning is echoed in `src/lib/crawler/pgcr.test.ts`.
+like it.
 
 ### `formatDisplayName` drops the `#Code` when the code is zero
 
