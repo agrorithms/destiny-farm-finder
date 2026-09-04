@@ -1,6 +1,6 @@
 {
     "database": "gos-10k",
-    "builtAt": "2026-09-04T05:52:29.566Z",
+    "builtAt": "2026-09-04T23:38:50.669Z",
     "builtBy": "scripts/build-gos10k-serving-db.ts",
     "master": {
         "path": "gos10k/destiny_pgcrs.db",
