@@ -77,7 +77,9 @@ Bungie did not populate `activityWasStartedFromBeginning` for the whole of the c
 so choosing which the page headlines is a call site, not a migration.
 
 Each named rule carries the *subject completed it* conjunct inside itself. Without it they return
-12,937 and 13,412 — 30% high, and plausible. That is the single most likely bug in this feature and
+10,040 and 13,412 — plausible, and wrong. The disjunctive rule is 34% high that way; the pinned one
+reads a stored column that already folds in "at least one player finished", so it is out by only 40
+runs the fireteam cleared from the start without him. The small gap makes it harder to spot. That is the single most likely bug in this feature and
 the reason the predicate is not left composable at the call site. It joins the Tracker's two
 predicates (`FULL_CLEAR`, `COMPLETION`, ADR 0006 and issue #70) as the third and fourth things in
 this codebase called "full clear"; all four are named apart on purpose.

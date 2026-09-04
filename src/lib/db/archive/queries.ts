@@ -52,10 +52,12 @@ export const SUBJECT_MEMBERSHIP_ID = '4611686018437585442';
  * The stored `is_full_clear` column holds exactly this rule, so it is what the SQL
  * reads; the CASE is documented here rather than repeated at every call site.
  *
- * `completed = 1` is inside the predicate, not left to the caller. Without it this
- * returns 12,937 — 30% high, and plausible. `is_full_clear = 1` alone returns 10,040:
- * 40 runs the fireteam cleared from the start *without* him, correctly flagged. The
- * gap narrowing from 3,400 rows to 40 makes the bug harder to notice, not less real.
+ * `completed = 1` is inside the predicate, not left to the caller. Dropping it leaves
+ * `is_full_clear = 1` alone, which returns **10,040**: 40 runs the fireteam cleared
+ * from the start *without* him, correctly flagged. (Evaluating the CASE above with no
+ * `completed` conjunct would return 12,937 instead — the stored column already folds
+ * in "at least one player finished", which is why the shipped gap is 40 and not 3,400.
+ * A 40-row error is harder to notice, not less real.)
  */
 export const PINNED_FULL_CLEAR = 'r.is_full_clear = 1 AND r.completed = 1';
 

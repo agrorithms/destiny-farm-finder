@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { assertDbPathAllowed } from '../index';
+import { assertDbPathAllowed, isThrowawayDbConfigured } from '../index';
 import manifest from './gos-10k-manifest.json';
 
 /**
@@ -135,8 +135,7 @@ export function getArchiveDb(): Database.Database {
     // not meant to. The guard above has already proved this path is the throwaway
     // fixture, so skipping here cannot silence the check for a real file.
     // verifyArchiveRowCounts() is tested directly instead.
-    const isFixture = Boolean((process.env.VITEST || process.env.DFF_E2E) && process.env.DFF_TEST_GOS10K_DB_SENTINEL);
-    if (!isFixture) {
+    if (!isThrowawayDbConfigured('DFF_TEST_GOS10K_DB_SENTINEL')) {
         try {
             verifyArchiveRowCounts(db, manifest.rowCounts, ARCHIVE_DB_PATH);
         } catch (error) {

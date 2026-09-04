@@ -468,6 +468,17 @@ then uncached at the edge and every hit reads SQLite on the box. `BYPASS` means 
 excluding it. **Record the observed values here when the check is run; until then this section
 describes intent, not confirmed behaviour.**
 
+**Observed locally, 2026-09-04** (`next start` on port 3123, no Cloudflare in front):
+
+```
+cache-control: public, max-age=86400, s-maxage=86400, immutable
+```
+
+That settles the half of the question that does not need prod: Next does *not* overwrite the
+middleware header with the `private, no-cache, no-store` it emits for dynamic routes, which was the
+plausible silent failure. What the edge does with it is still unverified, and the `curl` above is
+still required.
+
 ### Copy runbook: two files, by hand, no CI check
 
 Nothing in CI or `npm run build` touches either database, deliberately (ADR 0007). Both copies are

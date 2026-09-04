@@ -100,6 +100,20 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
  * wrong. Rails' ProtectedEnvironmentError makes the same trade. Please don't
  * delete it as a smell; see docs/adr/0003 and 0004.
  */
+/**
+ * True when a test runner is active *and* it has minted the sentinel this database
+ * opens against — i.e. `assertDbPathAllowed()` would pass for a fixture path rather
+ * than merely be inert.
+ *
+ * Exists so there is exactly one env sniff for "this is a throwaway database" rather
+ * than one per connection module. The Archive's manifest check reads it; see
+ * `src/lib/db/archive/index.ts` and ADR 0004's 2026-09-04 amendment.
+ */
+export function isThrowawayDbConfigured(sentinelEnvVar: string): boolean {
+    if (!process.env.VITEST && !process.env.DFF_E2E) return false;
+    return Boolean(process.env[sentinelEnvVar]);
+}
+
 export function assertDbPathAllowed(dbPath: string, sentinelEnvVar: string, label: string): void {
     const runner = process.env.VITEST ? 'Vitest' : process.env.DFF_E2E ? 'the e2e suite' : null;
     if (!runner) return;

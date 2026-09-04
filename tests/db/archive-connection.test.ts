@@ -21,6 +21,10 @@ import {
  * production counts by construction.
  */
 
+// `beforeEach`, not the `beforeAll` tests/README.md prescribes for Archive tests:
+// specs below delete and overwrite the fixture file to exercise the failure paths,
+// so there is nothing left for a later test to reuse. Read-only Archive tests should
+// still use `beforeAll`.
 beforeEach(() => {
     closeArchiveDb();
     buildFixtureArchive();

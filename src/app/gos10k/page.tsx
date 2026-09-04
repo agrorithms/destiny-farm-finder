@@ -61,7 +61,7 @@ export default function Gos10kPage() {
 
             <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 {[
-                    { value: overview.pinnedFullClears, label: 'full clears' },
+                    { value: overview.pinnedFullClears, label: 'full clears (pinned rule)' },
                     { value: overview.runs, label: 'runs entered' },
                     { value: overview.completions, label: 'runs finished' },
                     { value: overview.helpers, label: 'guardians who helped' },

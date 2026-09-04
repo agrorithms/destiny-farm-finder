@@ -180,6 +180,11 @@ than emptied: build it in `beforeAll` rather than `beforeEach` (there is nothing
 can write to it), and `closeArchiveDb()` first, because rebuilding the file under an open handle
 leaves the old snapshot in memory.
 
+The one exception is a test file that *destroys* the fixture to exercise a failure — deleting it to
+check the missing-file error, or replacing it to check the manifest mismatch. Those rebuild in
+`beforeEach`, because the previous test left no file to reuse. `tests/db/archive-connection.test.ts`
+is the example; anything only *reading* the Archive wants `beforeAll`.
+
 The seed is generated, not hand-written: `npm run extract-archive-fixture` pulls nine real runs and
 their player and weapon rows out of the master, along with the master's own DDL, so the fixture
 schema cannot drift. The nine are chosen for their hazards rather than for being typical — the run

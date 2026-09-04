@@ -67,8 +67,10 @@ which one it used:
   Comparable to the Tracker, generous by 20 runs before the flag was reliable.
 
 Both carry the second half — that the subject himself finished — inside the named rule rather than
-leaving it to the caller. Dropping it returns 12,937 / 13,412: a plausible-looking number that is
-wrong. See `src/lib/db/archive/queries.ts`.
+leaving it to the caller. Dropping it returns 10,040 / 13,412: plausible-looking numbers that are
+wrong. The pinned rule reads a stored column that already folds in "someone finished it", so its
+gap is only 40 runs — the fireteam cleared them from the start without him. A 40-run error is
+harder to notice than a 3,400-run one, not less wrong. See `src/lib/db/archive/queries.ts`.
 _Avoid_: complete run, fresh run
 
 **Checkpoint Run**:
