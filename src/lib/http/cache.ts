@@ -4,6 +4,8 @@ export function cacheControl(sMaxAgeSeconds: number, staleWhileRevalidateSeconds
     return `public, max-age=0, s-maxage=${sMaxAgeSeconds}, stale-while-revalidate=${staleWhileRevalidateSeconds}`;
 }
 
+const ARCHIVE_MAX_AGE_SECONDS = 86400;
+
 /**
  * For the Archive: a frozen, complete dataset whose last row was written before the
  * page existed and that will never gain another. This is the one place on the site
@@ -17,8 +19,8 @@ export function cacheControl(sMaxAgeSeconds: number, staleWhileRevalidateSeconds
  * repo that had never emitted a non-zero max-age. Check `cf-cache-status` and the header
  * prod returns before trusting this. See docs/decisions.md.
  */
-export function archiveCacheControl(maxAgeSeconds: number = 86400): string {
-    return `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, immutable`;
+export function archiveCacheControl(): string {
+    return `public, max-age=${ARCHIVE_MAX_AGE_SECONDS}, s-maxage=${ARCHIVE_MAX_AGE_SECONDS}, immutable`;
 }
 
 export function noStore(): string {

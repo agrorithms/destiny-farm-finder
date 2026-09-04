@@ -269,7 +269,8 @@ export const config = {
         '/api/active-sessions',
         '/api/players/:path*',
         '/api/gos10k/:path*',
+        // Matches the bare /gos10k too — `:path*` is zero-or-more, the same reason
+        // '/admin/stats/:path*' above needs no separate entry for its own bare path.
         '/gos10k/:path*',
-        '/gos10k',
     ],
 };
