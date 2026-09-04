@@ -27,12 +27,21 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dff-test-'));
 
 process.env.RAID_TRACKER_DB_PATH = path.join(dir, 'test.db');
 
-// The one database this process is allowed to open. getDb() compares DB_PATH
-// against this and refuses anything else while VITEST is set, so if the ordering
-// described above is ever broken the suite fails loudly instead of quietly
-// operating on the real, live database. Set here rather than in a helper because
-// this file is the only thing that knows which directory was minted.
+// The only databases this process is allowed to open. Each connection compares its
+// own resolved path against its own sentinel and refuses anything else while VITEST
+// is set, so if the ordering described above is ever broken the suite fails loudly
+// instead of quietly operating on the real, live data. Set here rather than in a
+// helper because this file is the only thing that knows which directory was minted.
 process.env.DFF_TEST_DB_SENTINEL = path.join(dir, 'test.db');
+
+// The same treatment for the second database this app opens, the GoS 10k Archive.
+// Same directory, same mkdtemp, so there is one thing to break rather than two. The
+// file itself is only created by tests that ask for it — tests/helpers/archive-seed.ts
+// builds it from the committed JSON seed — and getArchiveDb() refuses to create one,
+// so a test that reaches the Archive without seeding it fails loudly rather than
+// reading an empty database. See docs/adr/0003's 2026-09-04 amendment and ADR 0007.
+process.env.GOS10K_ARCHIVE_DB_PATH = path.join(dir, 'gos-10k-test.db');
+process.env.DFF_TEST_GOS10K_DB_SENTINEL = path.join(dir, 'gos-10k-test.db');
 
 // Keep the suite off any real key even if a test reaches code that reads one.
 process.env.BUNGIE_API_KEY = 'test-key-not-a-real-credential';

@@ -64,11 +64,19 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
  * Refuses to open anything but a throwaway database while running under a test
  * runner — Vitest (VITEST) or the Playwright e2e suite (DFF_E2E).
  *
- * DB_PATH above is resolved at *import* time, so whichever import comes first
- * freezes it for the process. Tests win that race only because
+ * Exported and parameterised because this app now opens more than one database:
+ * the Tracker here and the Archive in ./archive. Each caller passes its own path,
+ * its own sentinel variable and its own label. It was tempting to leave the
+ * Archive uncovered on the grounds that it opens `readonly` — but `readonly` only
+ * stops a test *writing* the real file; it does nothing about a test asserting
+ * against 13,420 production rows and passing for the wrong reason. See ADR 0003's
+ * 2026-09-04 amendment.
+ *
+ * The path a caller passes is resolved at *import* time, so whichever import comes
+ * first freezes it for the process. Tests win that race only because
  * tests/setup/test-db-path.ts runs as a Vitest setupFile, ahead of any test
  * file's imports. If that ordering is ever broken — setupFiles reordered, the
- * setup file turned into a helper, a config without setupFiles — DB_PATH
+ * setup file turned into a helper, a config without setupFiles — the path
  * silently becomes the real database and the suite's DELETE/VACUUM paths operate
  * on live data. Nothing would error. This turns that into a hard failure.
  *
@@ -81,6 +89,10 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
  * e2e/support/canary.setup.ts, which observes which database the running server
  * actually opened. See docs/adr/0003.
  *
+ * e2e mints no Archive sentinel, because no spec opens the Archive today. If one
+ * ever does it will throw here rather than read the real file — which is the
+ * intended outcome, and the fix is to mint one there the way Vitest does.
+ *
  * Yes, this means src/ contains a branch that only exists for tests, which is
  * the sort of thing ADR 0004 is otherwise suspicious of. It is a precondition
  * check, not a mock: it substitutes no behaviour, so it cannot make a failing
@@ -88,22 +100,22 @@ export function isDatabaseMaintenanceError(error: unknown): error is DatabaseMai
  * wrong. Rails' ProtectedEnvironmentError makes the same trade. Please don't
  * delete it as a smell; see docs/adr/0003 and 0004.
  */
-function assertDbPathAllowed(): void {
+export function assertDbPathAllowed(dbPath: string, sentinelEnvVar: string, label: string): void {
     const runner = process.env.VITEST ? 'Vitest' : process.env.DFF_E2E ? 'the e2e suite' : null;
     if (!runner) return;
 
-    const allowed = process.env.DFF_TEST_DB_SENTINEL;
-    if (!allowed || DB_PATH !== path.resolve(allowed)) {
+    const allowed = process.env[sentinelEnvVar];
+    if (!allowed || dbPath !== path.resolve(allowed)) {
         throw new Error(
-            `Refusing to open ${DB_PATH} under ${runner} — it is not the throwaway database ` +
-            `named by DFF_TEST_DB_SENTINEL. Either the setup that mints it did not run, or ` +
-            `something imported src/lib/db before it did.`
+            `Refusing to open the ${label} database at ${dbPath} under ${runner} — it is not the ` +
+            `throwaway database named by ${sentinelEnvVar}. Either the setup that mints it did not ` +
+            `run, or something imported the connection module before it did.`
         );
     }
 }
 
 export function getDb(): Database.Database {
-    assertDbPathAllowed();
+    assertDbPathAllowed(DB_PATH, 'DFF_TEST_DB_SENTINEL', 'Tracker');
 
     if (isDbQuiesceActive()) {
         closeDb();
